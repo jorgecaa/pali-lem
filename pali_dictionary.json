@@ -1,0 +1,205 @@
+{
+  "buddha": {
+    "meaning": "el Iluminado, el Despierto",
+    "morphology": "nom. masc. sing.",
+    "part_of_speech": "noun",
+    "root": "budh",
+    "translation": "The Awakened One, the Buddha"
+  },
+  "dhammo": {
+    "meaning": "fenómeno, ley, doctrina, verdad",
+    "morphology": "masc. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "dham",
+    "translation": "Phenomenon, Doctrine, Truth, Law"
+  },
+  "dhamma": {
+    "meaning": "ley, doctrina, verdad, fenómeno",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "dham",
+    "translation": "Doctrine, Truth, Law, Phenomenon"
+  },
+  "sangha": {
+    "meaning": "comunidad, congregación, asamblea",
+    "morphology": "masc. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "sang",
+    "translation": "Community, Congregation, Assembly"
+  },
+  "anicca": {
+    "meaning": "impermanencia",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "adj.",
+    "root": "nic",
+    "translation": "Impermanence, Impermanent"
+  },
+  "dukkha": {
+    "meaning": "sufrimiento, insatisfacción",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "dukh",
+    "translation": "Suffering, Unsatisfactoriness"
+  },
+  "anatta": {
+    "meaning": "no-yo, insubstancialidad, no-ser",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "att",
+    "translation": "Non-self, Insubstantiality, Non-being"
+  },
+  "sutta": {
+    "meaning": "discurso, sutra, hilo",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "sut",
+    "translation": "Discourse, Sutra, Thread"
+  },
+  "nirvana": {
+    "meaning": "nirvana, extinción, apagamiento",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "nir",
+    "translation": "Nirvana, Extinction, Cessation"
+  },
+  "karma": {
+    "meaning": "acción, obra, karman",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "kar",
+    "translation": "Action, Deed, Karma"
+  },
+  "bhikkhu": {
+    "meaning": "monje, bhiksu",
+    "morphology": "masc. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "bhik",
+    "translation": "Monk, Mendicant"
+  },
+  "bhikkhuni": {
+    "meaning": "monja, bhiksuni",
+    "morphology": "fem. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "bhik",
+    "translation": "Nun, Bhikshuni"
+  },
+  "arhat": {
+    "meaning": "arahán, iluminado, digno",
+    "morphology": "masc. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "arh",
+    "translation": "Arahant, Worthy One, Arhat"
+  },
+  "bodhisatta": {
+    "meaning": "buscador de iluminación, futuro buda",
+    "morphology": "masc. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "bodhi",
+    "translation": "Bodhisattva, Wisdom-Being"
+  },
+  "metta": {
+    "meaning": "benevolencia, bondad, amor compasivo",
+    "morphology": "fem. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "met",
+    "translation": "Loving-kindness, Benevolence, Goodwill"
+  },
+  "prajna": {
+    "meaning": "sabiduría, conocimiento, discernimiento",
+    "morphology": "fem. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "praj",
+    "translation": "Wisdom, Insight, Discernment"
+  },
+  "bhava": {
+    "meaning": "existencia, devenir, nacimiento",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "bhav",
+    "translation": "Existence, Becoming, Being"
+  },
+  "nama": {
+    "meaning": "nombre, mente, aspecto mental",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "nam",
+    "translation": "Name, Mind, Mental Aspect"
+  },
+  "rupa": {
+    "meaning": "forma, materialidad, cuerpo",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "rup",
+    "translation": "Form, Materiality, Body"
+  },
+  "vinnana": {
+    "meaning": "conciencia, conocimiento",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "vin",
+    "translation": "Consciousness, Awareness"
+  },
+  "pancasila": {
+    "meaning": "cinco preceptos, cinco disciplinas",
+    "morphology": "fem. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "panca",
+    "translation": "Five Precepts, Five Disciplines"
+  },
+  "yoga": {
+    "meaning": "yugo, disciplina, práctica",
+    "morphology": "masc. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "yog",
+    "translation": "Yoga, Practice, Discipline"
+  },
+  "mudita": {
+    "meaning": "alegría compasiva, simpatía",
+    "morphology": "fem. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "mud",
+    "translation": "Sympathetic joy, Appreciative happiness"
+  },
+  "upadana": {
+    "meaning": "apego, aferramiento, asimiento",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "upad",
+    "translation": "Craving, Clinging, Attachment"
+  },
+  "samadhi": {
+    "meaning": "concentración, meditación profunda",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "samadh",
+    "translation": "Concentration, Meditation, Focus"
+  },
+  "sila": {
+    "meaning": "virtud, moralidad, precepto",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "sil",
+    "translation": "Virtue, Morality, Precept"
+  },
+  "tanha": {
+    "meaning": "sed, deseo, apetencia",
+    "morphology": "fem. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "tanh",
+    "translation": "Thirst, Craving, Desire"
+  },
+  "vedana": {
+    "meaning": "sensación, sentimiento",
+    "morphology": "fem. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "ved",
+    "translation": "Sensation, Feeling" 
+  },
+  "sankhara": {
+    "meaning": "formación mental, condición, agregado",
+    "morphology": "neut. nom. sg.",
+    "part_of_speech": "noun",
+    "root": "sank",
+    "translation": "Formation, Conditioning, Aggregate"
+  }
+}
