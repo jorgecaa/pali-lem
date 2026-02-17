@@ -398,9 +398,10 @@ def process_pali_text(text, dictionary):
     return gloss_entries
 
 
-def process_pali_with_lookup_map(text, lookup_map):
+def process_pali_with_lookup_map(text, lookup_map, fallback_dictionary=None):
     token_stream = tokenize_pali_with_separators(text)
     gloss_entries = []
+    fallback_dictionary = fallback_dictionary or {}
 
     for token in token_stream:
         if token["kind"] == "separator":
@@ -417,6 +418,8 @@ def process_pali_with_lookup_map(text, lookup_map):
 
         word = token["norm"]
         entry = lookup_map.get(word)
+        if not entry:
+            entry = fallback_dictionary.get(word)
         if entry:
             gloss_entries.append({
                 "word": word,
@@ -740,7 +743,13 @@ if generate_clicked:
             if dict_name == "dpd" and dpd_db_path:
                 words = tuple(tokenize_pali_text(pali_text))
                 lookup_map = lookup_words_in_dpd(words, dpd_db_path)
-                gloss_entries = process_pali_with_lookup_map(pali_text, lookup_map)
+                local_fallback = load_dictionary("local")
+                combined_fallback = {**local_fallback, **dictionary}
+                gloss_entries = process_pali_with_lookup_map(
+                    pali_text,
+                    lookup_map,
+                    fallback_dictionary=combined_fallback,
+                )
             else:
                 gloss_entries = process_pali_text(pali_text, dictionary)
 
