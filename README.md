@@ -62,6 +62,7 @@ Notas:
 - Si cambias dependencias, haz push a `requirements.txt` y redeploy.
 - Si usas una rama distinta, selecciónala en el formulario.
 - La app usa caché con límites (`ttl` + `max_entries`) para reducir consumo de memoria en Streamlit Cloud.
+- Para usar el DPD completo sin subir archivos >100MB al repo, define `DPD_JSON_URL` en **App settings → Secrets** con una URL pública de `dpd_dictionary.json`; la app lo descargará automáticamente al iniciar.
 
 ## Generar el DPD completo
 

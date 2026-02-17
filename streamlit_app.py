@@ -7,6 +7,7 @@ import sqlite3
 import unicodedata
 import html
 from pathlib import Path
+import urllib.request
 
 PUNCTUATION_LABELS = {
     ".": "<PUNTO>",
@@ -48,6 +49,7 @@ st.set_page_config(
 def load_dictionary(dict_name="dpd"):
     """Carga el diccionario especificado"""
     if dict_name == "dpd":
+        ensure_dpd_json_available()
         dict_file = "dpd_dictionary.json"
     else:
         dict_file = "pali_dictionary.json"
@@ -60,6 +62,35 @@ def load_dictionary(dict_name="dpd"):
     
     with open(dict_path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+
+@st.cache_resource(show_spinner=False)
+def ensure_dpd_json_available():
+    """Descarga `dpd_dictionary.json` desde URL si no existe localmente."""
+    dict_path = Path(__file__).parent / "dpd_dictionary.json"
+    if dict_path.exists():
+        return str(dict_path)
+
+    dpd_json_url = os.environ.get("DPD_JSON_URL", "").strip()
+    if not dpd_json_url:
+        return ""
+
+    temp_path = dict_path.with_suffix(".json.part")
+    try:
+        with urllib.request.urlopen(dpd_json_url, timeout=180) as response, open(
+            temp_path, "wb"
+        ) as output_file:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                output_file.write(chunk)
+        temp_path.replace(dict_path)
+        return str(dict_path)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+        return ""
 
 
 def get_dpd_db_path():
@@ -713,7 +744,7 @@ else:
     total_words = len(dictionary)
     if dict_name == "dpd":
         st.caption(
-            f"Fuente: JSON local (fallback) · Entradas: {total_words}. Para mejor precisión usa dpd.db"
+            f"Fuente: JSON local (fallback) · Entradas: {total_words}. Para mejor precisión usa dpd.db o define DPD_JSON_URL en el despliegue"
         )
     else:
         st.caption(f"Entradas disponibles: {total_words}")
