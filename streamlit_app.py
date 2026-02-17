@@ -28,6 +28,12 @@ def lemmatize_pali_word(word):
     """
     Simple rule-based Pali lemmatizer.
     Removes common suffixes to find the root/lemma.
+    
+    Args:
+        word (str): The Pali word to lemmatize.
+    
+    Returns:
+        str: The lemmatized word or original word if no suffix matches.
     """
     word = word.strip()
     original_word = word
@@ -46,13 +52,20 @@ def lemmatize_pali_word(word):
 def lemmatize_text(text):
     """
     Lemmatize a full text by processing each word.
+    
+    Args:
+        text (str): The Pali text to lemmatize.
+    
+    Returns:
+        list[dict]: List of dictionaries containing 'original', 'word', 
+                    'lemma', 'prefix', 'suffix', and 'changed' keys for each word.
     """
     # Split text into words, preserving punctuation
     words = re.findall(r'\S+', text)
     results = []
     
     for word in words:
-        # Separate punctuation
+        # Separate punctuation: (1) leading non-word chars, (2) core word, (3) trailing non-word chars
         match = re.match(r'^([^\w]*)([\w]+)([^\w]*)$', word, re.UNICODE)
         if match:
             prefix, core_word, suffix = match.groups()
@@ -61,6 +74,8 @@ def lemmatize_text(text):
                 'original': word,
                 'word': core_word,
                 'lemma': lemma,
+                'prefix': prefix,
+                'suffix': suffix,
                 'changed': core_word != lemma
             })
         else:
@@ -68,6 +83,8 @@ def lemmatize_text(text):
                 'original': word,
                 'word': word,
                 'lemma': word,
+                'prefix': '',
+                'suffix': '',
                 'changed': False
             })
     
@@ -136,9 +153,9 @@ else:
                 else:
                     st.markdown(f"- {result['word']}")
         
-        # Show lemmatized text
+        # Show lemmatized text (preserving punctuation and spacing)
         st.markdown("#### Lemmatized Text")
-        lemmatized_text = " ".join([r['lemma'] for r in results])
+        lemmatized_text = " ".join([r['prefix'] + r['lemma'] + r['suffix'] for r in results])
         st.code(lemmatized_text, language=None)
 
 # Information section
