@@ -6,6 +6,7 @@ import os
 import sqlite3
 import unicodedata
 import html
+import gzip
 from pathlib import Path
 import urllib.request
 
@@ -66,10 +67,27 @@ def load_dictionary(dict_name="dpd"):
 
 @st.cache_resource(show_spinner=False)
 def ensure_dpd_json_available():
-    """Descarga `dpd_dictionary.json` desde URL si no existe localmente."""
+    """Asegura `dpd_dictionary.json` desde archivo local comprimido o URL remota."""
     dict_path = Path(__file__).parent / "dpd_dictionary.json"
+    gz_path = Path(__file__).parent / "dpd_dictionary.json.gz"
     if dict_path.exists():
         return str(dict_path)
+
+    if gz_path.exists():
+        temp_path = dict_path.with_suffix(".json.part")
+        try:
+            with gzip.open(gz_path, "rb") as input_file, open(temp_path, "wb") as output_file:
+                while True:
+                    chunk = input_file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output_file.write(chunk)
+            temp_path.replace(dict_path)
+            return str(dict_path)
+        except Exception:
+            if temp_path.exists():
+                temp_path.unlink()
+            return ""
 
     dpd_json_url = os.environ.get("DPD_JSON_URL", "").strip()
     if not dpd_json_url:
@@ -744,7 +762,7 @@ else:
     total_words = len(dictionary)
     if dict_name == "dpd":
         st.caption(
-            f"Fuente: JSON local (fallback) · Entradas: {total_words}. Para mejor precisión usa dpd.db o define DPD_JSON_URL en el despliegue"
+            f"Fuente: JSON local (fallback) · Entradas: {total_words}. Para mejor precisión usa dpd.db; en cloud también soporta dpd_dictionary.json.gz o DPD_JSON_URL"
         )
     else:
         st.caption(f"Entradas disponibles: {total_words}")
