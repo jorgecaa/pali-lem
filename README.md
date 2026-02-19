@@ -19,11 +19,6 @@ Una aplicación Streamlit que analiza textos en Pali proporcionando información
 - Términos clave del budismo Theravada
 - Información etimológica y morfológica precisa
 
-### Diccionario Local
-- Base de datos integrada con términos comunes
-- Respaldo cuando el DPD tiene cobertura limitada
-- Fácil de extender
-
 ## Cómo usar
 
 ### Instalación
@@ -64,6 +59,15 @@ Notas:
 - La app usa caché con límites (`ttl` + `max_entries`) para reducir consumo de memoria en Streamlit Cloud.
 - El repo puede incluir `dpd_dictionary.json.gz` (comprimido, <100MB). La app lo descomprime automáticamente a `dpd_dictionary.json` al iniciar.
 - Alternativa: define `DPD_JSON_URL` en **App settings → Secrets** con una URL pública de `dpd_dictionary.json`; la app también lo descargará automáticamente si no encuentra archivo local.
+- Si `dpd.db` no existe localmente, la app intenta descargarlo automáticamente desde releases de `digitalpalidictionary`.
+- Si `dpd.db` ya existe en `dpd-db/dpd.db`, la app verifica periódicamente si hay release nuevo y lo actualiza.
+
+Variables opcionales para `dpd.db`:
+- `DPD_DB_AUTO_UPDATE=1|0` (por defecto `1`)
+- `DPD_DB_UPDATE_INTERVAL_HOURS=24` (cada cuántas horas revisar)
+- `DPD_DB_RELEASE_TAG=v0.1.20240720` (fijar versión exacta)
+- `DPD_DB_TARBZ2_URL=https://.../dpd.db.tar.bz2` (URL de tarball personalizada)
+- `DPD_DB_URL=https://.../dpd.db` (URL directa a archivo `.db`)
 
 ## Generar el DPD completo
 
@@ -84,7 +88,7 @@ Si `dpd.db` no está disponible, la app usa `dpd_dictionary.json` como fallback.
 ## Uso
 
 1. **Ingresa un párrafo en Pali** en el área de texto principal
-2. **Selecciona el diccionario**: Digital Pali Dictionary o Diccionario Local
+2. **La app usa solo Digital Pali Dictionary (DPD)**
 3. **Visualiza** el análisis compacto con:
    - Categoría gramatical (noun, adj, verb, etc.)
    - Información morfológica (caso, número, género)
@@ -105,7 +109,7 @@ Opciones útiles:
 
 - `--text "..."`: texto directo
 - `--file ruta.txt`: leer texto desde archivo
-- `--dict dpd|local`: fuente de diccionario
+- `--dict dpd`: fuente de diccionario
 - `--db /ruta/dpd.db`: ruta explícita de base SQLite
 - `--format compact|rich`: tipo de salida
 - `--debug`: imprime fuente usada, cobertura y palabras faltantes
@@ -123,7 +127,7 @@ make cli-test TEXT="dhammo buddha sangha"
 ```
 
 Variables opcionales:
-- `DICT=dpd|local`
+- `DICT=dpd`
 - `FORMAT=compact|rich`
 - `DEBUG=1|0`
 - `DB=/ruta/dpd.db`
@@ -144,7 +148,7 @@ make battery-online
 ```
 
 Variables útiles:
-- `DICT=dpd|local`
+- `DICT=dpd`
 - `BMIN=90` (cobertura mínima esperada)
 - `ONLINE_WORDS="buddha,dhamma,saṅgha,anicca"`
 - `ONLINE_MIN=0.75` (umbral match de campos online)
@@ -170,7 +174,6 @@ sangha (noun) (masc. nom. sg.): comunidad, congregación, asamblea
 pali-lem/
 ├── streamlit_app.py          # Aplicación principal
 ├── download_dpd.py            # Script para procesar DPD
-├── pali_dictionary.json       # Diccionario local
 ├── dpd_dictionary.json        # Digital Pali Dictionary procesado
 ├── requirements.txt           # Dependencias
 ├── dpd-db/                    # Repositorio DPD descargado (opcional)
@@ -179,7 +182,7 @@ pali-lem/
 
 ## Extensión del diccionario
 
-Para agregar nuevas palabras, edita `pali_dictionary.json` o `dpd_dictionary.json`:
+Para agregar nuevas palabras, edita `dpd_dictionary.json`:
 
 ```json
 "palabra": {

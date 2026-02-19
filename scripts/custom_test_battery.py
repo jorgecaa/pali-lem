@@ -65,24 +65,18 @@ def _find_entry(gloss_entries, word):
 
 
 def _build_gloss(text: str, dictionary_name: str, db_path_override: str = ""):
-    dictionary = load_dictionary(dictionary_name)
+    dictionary = load_dictionary("dpd")
     source = ""
 
-    if dictionary_name == "dpd":
-        db_path = db_path_override or get_dpd_db_path()
-        if db_path:
-            words = tuple(tokenize_pali_text(text))
-            lookup_map = lookup_words_in_dpd(words, db_path)
-            local_fallback = load_dictionary("local")
-            combined_fallback = {**local_fallback, **dictionary}
-            gloss_entries = process_pali_with_lookup_map(text, lookup_map, fallback_dictionary=combined_fallback)
-            source = f"dpd.db ({db_path})"
-        else:
-            gloss_entries = process_pali_text(text, dictionary)
-            source = "dpd_dictionary.json fallback"
+    db_path = db_path_override or get_dpd_db_path()
+    if db_path:
+        words = tuple(tokenize_pali_text(text))
+        lookup_map = lookup_words_in_dpd(words, db_path)
+        gloss_entries = process_pali_with_lookup_map(text, lookup_map, fallback_dictionary=dictionary)
+        source = f"dpd.db ({db_path})"
     else:
         gloss_entries = process_pali_text(text, dictionary)
-        source = "pali_dictionary.json"
+        source = "dpd_dictionary.json"
 
     total_words = sum(1 for entry in gloss_entries if entry.get("part_of_speech") != "SEP")
     found_words = sum(1 for entry in gloss_entries if _entry_has_lexical_data(entry))
@@ -231,7 +225,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Batería personalizada para probar y validar la salida de Pali Glosser"
     )
-    parser.add_argument("--dict", choices=["dpd", "local"], default="dpd", help="Diccionario a probar")
+    parser.add_argument("--dict", choices=["dpd"], default="dpd", help="Diccionario a probar (solo dpd)")
     parser.add_argument("--db", default="", help="Ruta explícita a dpd.db")
     parser.add_argument(
         "--min-coverage",

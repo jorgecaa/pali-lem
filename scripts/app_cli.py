@@ -68,27 +68,23 @@ def read_input_text(args) -> str:
 
 def run_gloss(text: str, dictionary_name: str, db_path_override: str = "", debug: bool = False):
     with contextlib.redirect_stderr(io.StringIO()):
-        dictionary = load_dictionary(dictionary_name)
+        if dictionary_name != "dpd" and debug:
+            print("[debug] '--dict local' ya no se usa; forzando '--dict dpd'")
 
-        if dictionary_name == "dpd":
-            dpd_db_path = db_path_override or get_dpd_db_path()
-            if dpd_db_path:
-                words = tuple(tokenize_pali_text(text))
-                lookup_map = lookup_words_in_dpd(words, dpd_db_path)
-                local_fallback = load_dictionary("local")
-                combined_fallback = {**local_fallback, **dictionary}
-                gloss_entries = process_pali_with_lookup_map(
-                    text,
-                    lookup_map,
-                    fallback_dictionary=combined_fallback,
-                )
-                source = f"dpd.db ({dpd_db_path})"
-            else:
-                gloss_entries = process_pali_text(text, dictionary)
-                source = "dpd_dictionary.json (fallback)"
+        dictionary = load_dictionary("dpd")
+        dpd_db_path = db_path_override or get_dpd_db_path()
+        if dpd_db_path:
+            words = tuple(tokenize_pali_text(text))
+            lookup_map = lookup_words_in_dpd(words, dpd_db_path)
+            gloss_entries = process_pali_with_lookup_map(
+                text,
+                lookup_map,
+                fallback_dictionary=dictionary,
+            )
+            source = f"dpd.db ({dpd_db_path})"
         else:
             gloss_entries = process_pali_text(text, dictionary)
-            source = "pali_dictionary.json"
+            source = "dpd_dictionary.json"
 
     found_words = sum(1 for entry in gloss_entries if _entry_has_lexical_data(entry))
     total_words = sum(1 for entry in gloss_entries if entry.get("part_of_speech") != "SEP")
@@ -113,9 +109,9 @@ def main():
     parser.add_argument(
         "--dict",
         dest="dictionary_name",
-        choices=["dpd", "local"],
+        choices=["dpd"],
         default="dpd",
-        help="Fuente de diccionario (default: dpd)",
+        help="Fuente de diccionario (solo: dpd)",
     )
     parser.add_argument("--db", default="", help="Ruta explícita a dpd.db")
     parser.add_argument(

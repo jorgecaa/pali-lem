@@ -412,5 +412,97 @@ class TestFullSessionCycle(unittest.TestCase):
         self.assertIn("Clase B", final)
 
 
+# ---------------------------------------------------------------------------
+# Fallback de vocal final larga
+# ---------------------------------------------------------------------------
+
+class TestLongFinalVowelFallback(unittest.TestCase):
+
+    def test_generate_final_vowel_fallbacks(self):
+        self.assertEqual(app._generate_final_vowel_fallbacks("rājā"), ["rājā", "rāja"])
+        self.assertEqual(app._generate_final_vowel_fallbacks("bhikkhū"), ["bhikkhū", "bhikkhu"])
+        self.assertEqual(app._generate_final_vowel_fallbacks("dhamma"), ["dhamma"])
+
+    def test_generate_final_niggahita_fallbacks(self):
+        self.assertEqual(app._generate_final_vowel_fallbacks("buddhaṃ"), ["buddhaṃ", "buddham"])
+        self.assertEqual(app._generate_final_vowel_fallbacks("buddham"), ["buddham", "buddhaṃ"])
+
+    def test_process_pali_text_uses_short_vowel_fallback(self):
+        dictionary = {
+            "rāja": {
+                "meaning": "rey",
+                "morphology": "noun",
+                "part_of_speech": "noun",
+                "root": "N/A",
+                "translation": "rey",
+            }
+        }
+        entries = app.process_pali_text("rājā", dictionary)
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["word"], "rājā")
+        self.assertEqual(entries[0]["meaning"], "rey")
+        self.assertEqual(entries[0]["part_of_speech"], "noun")
+        self.assertEqual(entries[0]["match_type"], "fallback")
+        self.assertEqual(entries[0]["matched_form"], "rāja")
+
+    def test_process_pali_with_lookup_map_uses_short_vowel_fallback(self):
+        lookup_map = {
+            "bhikkhu": {
+                "meaning": "monje",
+                "morphology": "noun",
+                "part_of_speech": "noun",
+                "root": "N/A",
+                "translation": "monje",
+            }
+        }
+        entries = app.process_pali_with_lookup_map("bhikkhū", lookup_map, fallback_dictionary={})
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["word"], "bhikkhū")
+        self.assertEqual(entries[0]["meaning"], "monje")
+        self.assertEqual(entries[0]["part_of_speech"], "noun")
+        self.assertEqual(entries[0]["match_type"], "fallback")
+        self.assertEqual(entries[0]["matched_form"], "bhikkhu")
+
+    def test_process_pali_with_lookup_map_uses_niggahita_fallback(self):
+        lookup_map = {
+            "buddham": {
+                "meaning": "Buda (acusativo)",
+                "morphology": "noun",
+                "part_of_speech": "noun",
+                "root": "N/A",
+                "translation": "Buda",
+            }
+        }
+        entries = app.process_pali_with_lookup_map("buddhaṃ", lookup_map, fallback_dictionary={})
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0]["word"], "buddhaṃ")
+        self.assertEqual(entries[0]["meaning"], "Buda (acusativo)")
+        self.assertEqual(entries[0]["part_of_speech"], "noun")
+        self.assertEqual(entries[0]["match_type"], "fallback")
+        self.assertEqual(entries[0]["matched_form"], "buddham")
+
+    def test_compact_and_rich_gloss_include_fallback_marker(self):
+        entries = [
+            {
+                "word": "buddhaṃ",
+                "meaning": "Buda (acusativo)",
+                "morphology": "noun",
+                "part_of_speech": "noun",
+                "root": "N/A",
+                "sanskrit_root": "N/A",
+                "etymology": "N/A",
+                "translation": "Buda",
+                "match_type": "fallback",
+                "matched_form": "buddham",
+            }
+        ]
+
+        compact = app.generate_compact_gloss(entries)
+        rich = app.generate_rich_gloss_text(entries)
+
+        self.assertIn("[≈ buddham]", compact)
+        self.assertIn("[≈ buddham]", rich)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

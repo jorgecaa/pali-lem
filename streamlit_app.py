@@ -7,9 +7,10 @@ import sqlite3
 import unicodedata
 import html
 import gzip
+import tarfile
 from pathlib import Path
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 PUNCTUATION_LABELS = {
@@ -51,27 +52,23 @@ if not IS_CONSOLE_MODE:
         layout="centered"
     )
 
-# Cargar diccionarios locales (fallback)
-@st.cache_data(ttl=3600, max_entries=8)
-def load_dictionary(dict_name="dpd"):
-    """Carga el diccionario especificado"""
-    if dict_name == "dpd":
-        ensure_dpd_json_available()
-        dict_file = "dpd_dictionary.json"
-    else:
-        dict_file = "pali_dictionary.json"
-    
-    dict_path = Path(__file__).parent / dict_file
-    
+# Cargar diccionario DPD
+@st.cache_data(ttl=3600, max_entries=1, show_spinner="Cargando diccionario DPD...")
+def load_dictionary():
+    """Carga únicamente `dpd_dictionary.json`."""
+    ensure_dpd_json_available()
+    dict_path = Path(__file__).parent / "dpd_dictionary.json"
+
     if not dict_path.exists():
-        # Si no existe, usar el otro
-        dict_path = Path(__file__).parent / ("pali_dictionary.json" if dict_file == "dpd_dictionary.json" else "dpd_dictionary.json")
-    
-    with open(dict_path, 'r', encoding='utf-8') as f:
+        raise FileNotFoundError(
+            "No se encontró dpd_dictionary.json. Configura DPD_JSON_URL o añade dpd_dictionary.json.gz/local."
+        )
+
+    with open(dict_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-@st.cache_resource(show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner="Preparando diccionario por primera vez...")
 def ensure_dpd_json_available():
     """Asegura `dpd_dictionary.json` desde archivo local comprimido o URL remota."""
     dict_path = Path(__file__).parent / "dpd_dictionary.json"
@@ -117,18 +114,248 @@ def ensure_dpd_json_available():
         return ""
 
 
-def get_dpd_db_path():
-    """Encuentra la ruta de dpd.db siguiendo rutas conocidas y variable de entorno."""
+def _is_valid_dpd_db(path):
+    if not path or not path.exists() or not path.is_file():
+        return False
+    try:
+        conn = sqlite3.connect(str(path))
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lookup' LIMIT 1"
+        )
+        result = cursor.fetchone()
+        conn.close()
+        return result is not None
+    except sqlite3.Error:
+        return False
+
+
+def _build_dpd_db_candidates():
+    module_dir = Path(__file__).resolve().parent
     env_path = os.environ.get("DPD_DB_PATH", "").strip()
-    candidate_paths = [
-        Path(env_path) if env_path else None,
-        Path(__file__).parent / "dpd-db" / "dpd.db",
-        Path(__file__).parent / "dpd.db",
-    ]
-    for candidate in candidate_paths:
-        if candidate and candidate.exists():
-            return str(candidate)
-    return ""
+
+    candidate_paths = []
+    if env_path:
+        candidate_paths.append(Path(env_path).expanduser())
+
+    search_roots = [module_dir, Path.cwd(), *module_dir.parents]
+    for root in search_roots:
+        candidate_paths.append(root / "dpd-db" / "dpd.db")
+        candidate_paths.append(root / "dpd.db")
+    return candidate_paths
+
+
+def _resolve_dpd_db_download_url():
+    db_url = os.environ.get("DPD_DB_URL", "").strip()
+    if db_url:
+        return db_url
+
+    release_tag = os.environ.get("DPD_DB_RELEASE_TAG", "").strip()
+    if release_tag:
+        return (
+            "https://github.com/digitalpalidictionary/dpd-db/"
+            f"releases/download/{release_tag}/dpd.db.tar.bz2"
+        )
+
+    return os.environ.get(
+        "DPD_DB_TARBZ2_URL",
+        "https://github.com/digitalpalidictionary/dpd-db/releases/latest/download/dpd.db.tar.bz2",
+    ).strip()
+
+
+def _as_bool(value, default=True):
+    if value is None:
+        return default
+    return str(value).strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _load_json_file(path, default):
+    if not path.exists():
+        return default
+    try:
+        with open(path, "r", encoding="utf-8") as file_handle:
+            return json.load(file_handle)
+    except Exception:
+        return default
+
+
+def _save_json_file(path, payload):
+    temp_path = path.with_suffix(".tmp")
+    try:
+        with open(temp_path, "w", encoding="utf-8") as file_handle:
+            json.dump(payload, file_handle, ensure_ascii=False, indent=2)
+        temp_path.replace(path)
+    except Exception:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def _utcnow():
+    return datetime.now(ZoneInfo("UTC"))
+
+
+def _should_check_update(last_checked_at, interval_hours):
+    if interval_hours <= 0:
+        return True
+    if not last_checked_at:
+        return True
+    try:
+        parsed = datetime.fromisoformat(last_checked_at)
+    except ValueError:
+        return True
+    return _utcnow() - parsed >= timedelta(hours=interval_hours)
+
+
+def _fetch_remote_signature(download_url, timeout):
+    def build_signature(response):
+        return {
+            "resolved_url": response.geturl(),
+            "etag": response.headers.get("ETag", ""),
+            "last_modified": response.headers.get("Last-Modified", ""),
+            "content_length": response.headers.get("Content-Length", ""),
+        }
+
+    try:
+        request = urllib.request.Request(download_url, method="HEAD")
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return build_signature(response)
+    except Exception:
+        return {}
+
+
+def _download_dpd_db(download_url, target_dir, target_db, timeout):
+    if download_url.endswith(".db"):
+        temp_path = target_db.with_suffix(".db.part")
+        try:
+            with urllib.request.urlopen(download_url, timeout=timeout) as response, open(
+                temp_path, "wb"
+            ) as output_file:
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output_file.write(chunk)
+            temp_path.replace(target_db)
+            return True
+        except Exception:
+            if temp_path.exists():
+                temp_path.unlink()
+            return False
+
+    archive_path = target_dir / "dpd.db.tar.bz2.part"
+    temp_db_path = target_dir / "dpd.db.part"
+    try:
+        with urllib.request.urlopen(download_url, timeout=timeout) as response, open(
+            archive_path, "wb"
+        ) as output_file:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                output_file.write(chunk)
+
+        with tarfile.open(archive_path, mode="r:bz2") as archive:
+            member = None
+            for item in archive.getmembers():
+                if item.isfile() and Path(item.name).name == "dpd.db":
+                    member = item
+                    break
+            if member is None:
+                return False
+
+            with archive.extractfile(member) as source_file, open(
+                temp_db_path, "wb"
+            ) as output_file:
+                while True:
+                    chunk = source_file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    output_file.write(chunk)
+
+        temp_db_path.replace(target_db)
+        return True
+    except Exception:
+        if temp_db_path.exists():
+            temp_db_path.unlink()
+        return False
+    finally:
+        if archive_path.exists():
+            archive_path.unlink()
+
+
+def ensure_dpd_db_available():
+    """Asegura `dpd.db` local y lo actualiza periódicamente desde releases remotos."""
+    module_dir = Path(__file__).resolve().parent
+    target_dir = module_dir / "dpd-db"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_db = target_dir / "dpd.db"
+    meta_path = target_dir / ".dpd_db_meta.json"
+
+    valid_candidates = []
+    seen = set()
+    for candidate in _build_dpd_db_candidates():
+        resolved = str(candidate.resolve()) if candidate.exists() else str(candidate)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if _is_valid_dpd_db(candidate):
+            valid_candidates.append(candidate.resolve())
+
+    managed_db = target_db.resolve()
+    selected_db = valid_candidates[0] if valid_candidates else None
+    if selected_db and selected_db != managed_db:
+        return str(selected_db)
+
+    download_url = _resolve_dpd_db_download_url()
+    if not download_url:
+        return str(selected_db) if selected_db else ""
+
+    timeout = int(os.environ.get("DPD_DB_DOWNLOAD_TIMEOUT", "300"))
+    auto_update = _as_bool(os.environ.get("DPD_DB_AUTO_UPDATE", "1"), default=True)
+    interval_hours = int(os.environ.get("DPD_DB_UPDATE_INTERVAL_HOURS", "24"))
+
+    meta = _load_json_file(meta_path, default={})
+    remote_signature = _fetch_remote_signature(download_url, timeout)
+    should_download = selected_db is None
+
+    if selected_db is not None and auto_update:
+        if _should_check_update(meta.get("last_checked_at", ""), interval_hours):
+            if remote_signature:
+                previous_signature = meta.get("remote_signature", {})
+                should_download = previous_signature != remote_signature
+
+    if not should_download:
+        if auto_update:
+            meta.update(
+                {
+                    "download_url": download_url,
+                    "last_checked_at": _utcnow().isoformat(),
+                    "remote_signature": remote_signature or meta.get("remote_signature", {}),
+                }
+            )
+            _save_json_file(meta_path, meta)
+        return str(selected_db)
+
+    if _download_dpd_db(download_url, target_dir, target_db, timeout) and _is_valid_dpd_db(
+        target_db
+    ):
+        meta.update(
+            {
+                "download_url": download_url,
+                "updated_at": _utcnow().isoformat(),
+                "last_checked_at": _utcnow().isoformat(),
+                "remote_signature": remote_signature,
+            }
+        )
+        _save_json_file(meta_path, meta)
+        return str(target_db.resolve())
+
+    return str(selected_db) if selected_db else ""
+
+
+def get_dpd_db_path():
+    """Encuentra una base `dpd.db` válida usando referencias relativas al proyecto."""
+    return ensure_dpd_db_available()
 
 
 def _load_json_field(value, default):
@@ -168,27 +395,67 @@ def _normalize_token(token):
     return normalized.replace("ṁ", "ṃ")
 
 
+ROOT_GROUP_NAMES = {
+    "1": "bhvādi",
+    "2": "adādi",
+    "3": "juhotyādi",
+    "4": "divādi",
+    "5": "svādi",
+    "6": "tudādi",
+    "7": "rudhādi",
+    "8": "tanādi",
+    "9": "kryādi",
+    "10": "curādi",
+}
+
+FINAL_LONG_VOWEL_MAP = {
+    "ā": "a",
+    "ī": "i",
+    "ū": "u",
+}
+
+FINAL_NIGGAHITA_MAP = {
+    "ṃ": "m",
+    "m": "ṃ",
+}
+
+
+def _generate_final_vowel_fallbacks(word):
+    normalized_word = _normalize_token(word)
+    if not normalized_word:
+        return []
+
+    candidates = [normalized_word]
+    for long_vowel, short_vowel in FINAL_LONG_VOWEL_MAP.items():
+        if normalized_word.endswith(long_vowel):
+            candidates.append(f"{normalized_word[:-1]}{short_vowel}")
+            break
+
+    for source_char, target_char in FINAL_NIGGAHITA_MAP.items():
+        if normalized_word.endswith(source_char):
+            candidates.append(f"{normalized_word[:-1]}{target_char}")
+            break
+
+    return _dedupe(candidates)
+
+
+def _resolve_entry_with_fallback(word, dictionary):
+    normalized_word = _normalize_token(word)
+    for candidate in _generate_final_vowel_fallbacks(normalized_word):
+        entry = dictionary.get(candidate)
+        if entry:
+            return entry, candidate != normalized_word, candidate
+    return None, False, ""
+
+
 def _build_root_label(root_sign, root_key, root_group):
     if not root_key:
         return ""
 
-    root_group_names = {
-        "1": "bhvādi",
-        "2": "adādi",
-        "3": "juhotyādi",
-        "4": "divādi",
-        "5": "svādi",
-        "6": "tudādi",
-        "7": "rudhādi",
-        "8": "tanādi",
-        "9": "kryādi",
-        "10": "curādi",
-    }
-
     base_root = f"{root_sign or ''}{root_key}"
     group_text = str(root_group).strip() if root_group is not None else ""
     if group_text and group_text not in {"N/A", "---"}:
-        group_label = root_group_names.get(group_text, "")
+        group_label = ROOT_GROUP_NAMES.get(group_text, "")
         group_display = f"{group_text} ({group_label})" if group_label else group_text
         if base_root.strip().endswith(f" {group_text}"):
             if group_label:
@@ -294,23 +561,42 @@ def lookup_words_in_dpd(words, dpd_db_path):
         return {}
 
     result = {}
+    word_candidates = {
+        word: _generate_final_vowel_fallbacks(word)
+        for word in unique_words
+    }
+    query_words = [
+        candidate
+        for candidate in _dedupe(
+            item
+            for candidates in word_candidates.values()
+            for item in candidates
+        )
+        if candidate
+    ]
+
+    if not query_words:
+        return {}
+
     conn = sqlite3.connect(dpd_db_path)
     try:
         conn.row_factory = sqlite3.Row
         root_group_cache = {}
-        placeholders = ",".join("?" for _ in unique_words)
+        placeholders = ",".join("?" for _ in query_words)
 
         lookup_rows = conn.execute(
             f"SELECT lookup_key, headwords, grammar FROM lookup WHERE lookup_key IN ({placeholders})",
-            unique_words,
+            query_words,
         ).fetchall()
-        lookup_map = {row["lookup_key"]: row for row in lookup_rows}
-
+        # Parsear headwords JSON una sola vez y almacenarlo junto a la fila
+        lookup_map = {}
         headword_ids = []
         for row in lookup_rows:
             parsed_ids = _load_json_field(row["headwords"], [])
-            if isinstance(parsed_ids, list):
-                headword_ids.extend(parsed_ids)
+            if not isinstance(parsed_ids, list):
+                parsed_ids = []
+            lookup_map[row["lookup_key"]] = (row, parsed_ids)
+            headword_ids.extend(parsed_ids)
         unique_headword_ids = [item for item in _dedupe(headword_ids) if isinstance(item, int)]
 
         headwords_by_id = {}
@@ -327,9 +613,34 @@ def lookup_words_in_dpd(words, dpd_db_path):
             ).fetchall()
             headwords_by_id = {row["id"]: row for row in hw_rows}
 
+        # Bulk-load root_group para todas las raíces únicas encontradas en headwords
+        # evitando N queries individuales a dpd_roots
+        all_root_keys = set()
+        for hw in headwords_by_id.values():
+            if hw["root_key"]:
+                all_root_keys.add(str(hw["root_key"]))
+        if all_root_keys:
+            rk_placeholders = ",".join("?" for _ in all_root_keys)
+            root_rows = conn.execute(
+                f"SELECT root, root_sign, root_group FROM dpd_roots WHERE root IN ({rk_placeholders})",
+                list(all_root_keys),
+            ).fetchall()
+            for rr in root_rows:
+                cache_key = (str(rr["root_sign"] or ""), str(rr["root"] or ""))
+                if cache_key not in root_group_cache:
+                    root_group_cache[cache_key] = str(rr["root_group"]).strip() if rr["root_group"] is not None else ""
+
         missing_words = []
         for word in unique_words:
-            row = lookup_map.get(word)
+            row = None
+            parsed_ids = []
+            matched_candidate = word
+            for candidate in word_candidates.get(word, [word]):
+                entry = lookup_map.get(candidate)
+                if entry:
+                    row, parsed_ids = entry
+                    matched_candidate = candidate
+                    break
             if not row:
                 missing_words.append(word)
                 continue
@@ -356,7 +667,6 @@ def lookup_words_in_dpd(words, dpd_db_path):
             construction_values = []
             stem_values = []
             pattern_values = []
-            parsed_ids = _load_json_field(row["headwords"], [])
             if isinstance(parsed_ids, list):
                 for headword_id in parsed_ids:
                     hw = headwords_by_id.get(headword_id)
@@ -411,10 +721,24 @@ def lookup_words_in_dpd(words, dpd_db_path):
                 "sanskrit_root": sanskrit_root or "N/A",
                 "etymology": etymology_label or "N/A",
                 "translation": merged_meaning or "N/A",
+                "match_type": "fallback" if matched_candidate != word else "exact",
+                "matched_form": matched_candidate,
             }
 
         if missing_words:
-            missing_placeholders = ",".join("?" for _ in missing_words)
+            lemma_candidates = [
+                candidate
+                for candidate in _dedupe(
+                    item
+                    for word in missing_words
+                    for item in word_candidates.get(word, [word])
+                )
+                if candidate
+            ]
+            if not lemma_candidates:
+                return result
+
+            missing_placeholders = ",".join("?" for _ in lemma_candidates)
             lemma_rows = conn.execute(
                 f"""
                 SELECT lemma_1, pos, grammar, meaning_1, meaning_2, meaning_lit, sanskrit, root_key, root_sign
@@ -422,7 +746,7 @@ def lookup_words_in_dpd(words, dpd_db_path):
                 FROM dpd_headwords
                 WHERE lower(lemma_1) IN ({missing_placeholders})
                 """,
-                missing_words,
+                lemma_candidates,
             ).fetchall()
 
             lemma_map = {}
@@ -461,8 +785,13 @@ def lookup_words_in_dpd(words, dpd_db_path):
                 }
 
             for word in missing_words:
-                if word in lemma_map:
-                    result[word] = lemma_map[word]
+                for candidate in word_candidates.get(word, [word]):
+                    if candidate in lemma_map:
+                        lemma_entry = dict(lemma_map[candidate])
+                        lemma_entry["match_type"] = "fallback" if candidate != word else "exact"
+                        lemma_entry["matched_form"] = candidate
+                        result[word] = lemma_entry
+                        break
     finally:
         conn.close()
 
@@ -488,7 +817,7 @@ def process_pali_text(text, dictionary):
             continue
 
         word = token["norm"]
-        entry = dictionary.get(word)
+        entry, used_fallback, matched_form = _resolve_entry_with_fallback(word, dictionary)
         if entry:
             gloss_entries.append({
                 "word": word,
@@ -498,7 +827,9 @@ def process_pali_text(text, dictionary):
                 "root": entry.get("root", "N/A"),
                 "sanskrit_root": entry.get("sanskrit_root", "N/A"),
                 "etymology": entry.get("etymology", "N/A"),
-                "translation": entry.get("translation", "N/A")
+                "translation": entry.get("translation", "N/A"),
+                "match_type": entry.get("match_type", "fallback" if used_fallback else "exact"),
+                "matched_form": entry.get("matched_form", matched_form or word),
             })
         else:
             gloss_entries.append({
@@ -534,9 +865,9 @@ def process_pali_with_lookup_map(text, lookup_map, fallback_dictionary=None):
             continue
 
         word = token["norm"]
-        entry = lookup_map.get(word)
+        entry, used_fallback, matched_form = _resolve_entry_with_fallback(word, lookup_map)
         if not entry:
-            entry = fallback_dictionary.get(word)
+            entry, used_fallback, matched_form = _resolve_entry_with_fallback(word, fallback_dictionary)
         if entry:
             gloss_entries.append({
                 "word": word,
@@ -546,7 +877,9 @@ def process_pali_with_lookup_map(text, lookup_map, fallback_dictionary=None):
                 "root": entry.get("root", "N/A"),
                 "sanskrit_root": entry.get("sanskrit_root", "N/A"),
                 "etymology": entry.get("etymology", "N/A"),
-                "translation": entry.get("translation", "N/A")
+                "translation": entry.get("translation", "N/A"),
+                "match_type": entry.get("match_type", "fallback" if used_fallback else "exact"),
+                "matched_form": entry.get("matched_form", matched_form or word),
             })
         else:
             gloss_entries.append({
@@ -603,7 +936,7 @@ def humanize_part_of_speech(pos_value):
         normalized_part = part
         for source, target in pos_map.items():
             normalized_part = re.sub(
-                rf"(?<!\\w){re.escape(source)}(?!\\w)",
+                rf"(?<!\w){re.escape(source)}(?!\w)",
                 target,
                 normalized_part,
                 flags=re.IGNORECASE,
@@ -625,12 +958,16 @@ def generate_compact_gloss(gloss_entries):
         morph = entry['morphology'] if entry['morphology'] != "---" else ""
         meaning = entry['meaning']
         
+        fallback_suffix = ""
+        if entry.get("match_type") == "fallback" and entry.get("matched_form") and entry.get("matched_form") != entry.get("word"):
+            fallback_suffix = f" [≈ {entry.get('matched_form')}]"
+
         if pos and morph:
-            line = f"{entry['word']} ({pos}) ({morph}): {meaning}"
+            line = f"{entry['word']}{fallback_suffix} ({pos}) ({morph}): {meaning}"
         elif pos:
-            line = f"{entry['word']} ({pos}): {meaning}"
+            line = f"{entry['word']}{fallback_suffix} ({pos}): {meaning}"
         else:
-            line = f"{entry['word']}: {meaning}"
+            line = f"{entry['word']}{fallback_suffix}: {meaning}"
         
         lines.append(line)
     
@@ -673,52 +1010,72 @@ def _entry_has_lexical_data(entry):
 
 
 def render_philological_gloss(gloss_entries):
+    def _row(label, value, extra_class=""):
+        if value == "—":
+            val_html = f'<span class="gloss-dash">—</span>'
+        else:
+            val_html = html.escape(value)
+        return (
+            f'<div class="gloss-row {extra_class}">'
+            f'<span class="gloss-label">{label}</span>'
+            f'<span class="gloss-value">{val_html}</span>'
+            f'</div>'
+        )
+
     entry_number = 0
     for entry in gloss_entries:
         if entry.get("part_of_speech") == "SEP":
             symbol = _display_value(entry.get("separator_symbol"), "")
-            label = _display_value(entry.get("word"), "<SEP>")
-            st.caption(f"{label} {symbol}".strip())
+            st.markdown(
+                f'<span class="sep-chip">{html.escape(symbol)}</span>',
+                unsafe_allow_html=True,
+            )
             continue
 
         entry_number += 1
-        word = _display_value(entry.get("word"))
-        pos = _display_value(humanize_part_of_speech(entry.get("part_of_speech")))
+        word       = _display_value(entry.get("word"))
+        pos        = _display_value(humanize_part_of_speech(entry.get("part_of_speech")))
         morphology = _display_value(entry.get("morphology"))
-        meaning = _display_value(entry.get("meaning"))
+        meaning    = _display_value(entry.get("meaning"))
         translation = _display_value(entry.get("translation"))
         show_translation = translation != "—" and not _same_content(meaning, translation)
-        root = _display_value(entry.get("root"))
+        root         = _display_value(entry.get("root"))
         sanskrit_root = _display_value(entry.get("sanskrit_root"))
-        etymology = _display_value(entry.get("etymology"))
+        etymology    = _display_value(entry.get("etymology"))
 
-        safe_word = html.escape(word)
-        safe_pos = html.escape(pos)
-        safe_morphology = html.escape(morphology)
-        safe_meaning = html.escape(meaning)
-        safe_translation = html.escape(translation)
-        safe_root = html.escape(root)
-        safe_sanskrit_root = html.escape(sanskrit_root)
-        safe_etymology = html.escape(etymology)
+        has_data = _entry_has_lexical_data(entry)
+        card_class = "gloss-card" if has_data else "gloss-card not-found"
 
-        translation_html = (
-            f'<div><strong>Traducción:</strong> {safe_translation}</div>' if show_translation else ""
-        )
+        fallback_html = ""
+        if entry.get("match_type") == "fallback":
+            mf = _display_value(entry.get("matched_form"), "")
+            if mf and mf != word:
+                fallback_html = f'<span class="gloss-fallback"> ≈ {html.escape(mf)}</span>'
+
+        not_found_html = "" if has_data else ' <span title="No encontrado en el diccionario">⚠️</span>'
+        pos_badge = f'<span class="pos-badge">{html.escape(pos)}</span>' if pos != "—" else ""
+
+        rows_html = "".join([
+            _row("Morfología", morphology, "gloss-morph"),
+            _row("Significado", meaning, "gloss-meaning"),
+            (_row("Traducción", translation) if show_translation else ""),
+            _row("Raíz", root, "gloss-root"),
+            _row("Sánscrito", sanskrit_root),
+            _row("Etimología", etymology, "gloss-etym"),
+        ])
 
         st.markdown(
-            f"""
-<div class="lemma-line">{entry_number}. {safe_word}</div>
-<div class="gram-line"><strong>Categoría:</strong> <span>{safe_pos}</span></div>
-<div class="gram-line"><strong>Morfología:</strong> <span>{safe_morphology}</span></div>
-<div><strong>Significado:</strong> {safe_meaning}</div>
-{translation_html}
-<div><strong>Raíz:</strong> {safe_root}</div>
-<div><strong>Raíz sánscrita:</strong> {safe_sanskrit_root}</div>
-<div><strong>Etimología:</strong> {safe_etymology}</div>
-""",
+            f"""<div class="{card_class}">
+  <div class="gloss-card-header">
+    <span class="gloss-num">{entry_number}.</span>
+    <span class="gloss-word">{html.escape(word)}</span>{fallback_html}{not_found_html}
+    {pos_badge}
+  </div>
+  <div class="gloss-fields">{rows_html}</div>
+</div>""",
             unsafe_allow_html=True,
         )
-        st.divider()
+
 
 def generate_rich_gloss_text(gloss_entries):
     lines = []
@@ -732,6 +1089,11 @@ def generate_rich_gloss_text(gloss_entries):
 
         entry_number += 1
         word = _display_value(entry.get("word"))
+        fallback_suffix = ""
+        if entry.get("match_type") == "fallback":
+            matched_form = _display_value(entry.get("matched_form"), "")
+            if matched_form and matched_form != word:
+                fallback_suffix = f" [≈ {matched_form}]"
         pos = _display_value(humanize_part_of_speech(entry.get("part_of_speech")))
         morphology = _display_value(entry.get("morphology"))
         meaning = _display_value(entry.get("meaning"))
@@ -743,7 +1105,7 @@ def generate_rich_gloss_text(gloss_entries):
 
         lines.extend(
             [
-                f"{entry_number}. {word}",
+                f"{entry_number}. {word}{fallback_suffix}",
                 f"  Categoría: {pos}",
                 f"  Morfología: {morphology}",
                 f"  Significado: {meaning}",
@@ -774,39 +1136,44 @@ def render_copy_button(text_to_copy, button_label, key_suffix):
     <button
         style="
             width: 100%;
-            border: 1px solid rgba(49, 51, 63, 0.2);
+            border: 1px solid rgba(49,51,63,0.2);
             border-radius: 8px;
-            padding: 0.45rem 0.75rem;
+            padding: 0.38rem 0.6rem;
             background: white;
             cursor: pointer;
-            font-size: 0.95rem;
+            font-size: 0.88rem;
+            font-family: inherit;
+            color: #374151;
+            transition: background 0.15s;
         "
+        onmouseover="this.style.background='#f9fafb'"
+        onmouseout="this.style.background='white'"
         onclick="{function_name}()"
     >
         {button_label}
     </button>
-    <div id="{status_id}" style="font-size:0.85rem; margin-top:0.35rem; color:#555;"></div>
+    <div id="{status_id}" style="font-size:0.78rem;margin-top:0.25rem;color:#6b7280;text-align:center;"></div>
 </div>
 <script>
 function {function_name}() {{
     const text = {encoded_text};
     const status = document.getElementById('{status_id}');
     navigator.clipboard.writeText(text)
-        .then(() => {{ status.textContent = 'Copiado al portapapeles'; }})
-        .catch(() => {{ status.textContent = 'No se pudo copiar automáticamente'; }});
+        .then(() => {{ status.textContent = '\u2713 Copiado'; setTimeout(()=>status.textContent='',2000); }})
+        .catch(() => {{ status.textContent = 'Error al copiar'; }});
 }}
 </script>
 """,
-        height=74,
+        height=68,
     )
 
 
 def _dict_name_to_option(dict_name):
-    return "Digital Pali Dictionary" if dict_name == "dpd" else "Diccionario Local"
+    return "Digital Pali Dictionary"
 
 
 def _dict_option_to_name(dict_option):
-    return "dpd" if dict_option == "Digital Pali Dictionary" else "local"
+    return "dpd"
 
 
 def _session_option_label(session_name, sessions):
@@ -847,15 +1214,13 @@ def load_saved_sessions():
 
 
 def persist_saved_sessions(sessions):
-    temp_path = SAVED_SESSIONS_PATH.with_suffix(".json.part")
-    with open(temp_path, "w", encoding="utf-8") as file:
-        json.dump(sessions, file, ensure_ascii=False, indent=2)
-    temp_path.replace(SAVED_SESSIONS_PATH)
+    _save_json_file(SAVED_SESSIONS_PATH, sessions)
 
 
 def build_session_payload(dict_name, pali_text):
     return {
-        "saved_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "saved_at": _utcnow().isoformat(timespec="seconds"),
+
         "dict_name": dict_name,
         "pali_text": pali_text,
         "generated_gloss": bool(st.session_state.get("generated_gloss", False)),
@@ -869,9 +1234,7 @@ def build_session_payload(dict_name, pali_text):
 
 
 def apply_loaded_session(session_data):
-    dict_name = str(session_data.get("dict_name", "dpd")).strip().lower()
-    if dict_name not in {"dpd", "local"}:
-        dict_name = "dpd"
+    dict_name = "dpd"
 
     st.session_state["dict_option"] = _dict_name_to_option(dict_name)
     st.session_state["pali_text_input"] = str(session_data.get("pali_text", ""))
@@ -904,8 +1267,6 @@ if not IS_CONSOLE_MODE:
         st.session_state["save_session_name_input"] = ""
     if "pending_reset_save_input" not in st.session_state:
         st.session_state["pending_reset_save_input"] = False
-    if "session_picker" in st.session_state:
-        del st.session_state["session_picker"]
     if "session_picker_name" not in st.session_state:
         st.session_state["session_picker_name"] = ""
     if "pending_session_picker_name" not in st.session_state:
@@ -916,41 +1277,186 @@ if not IS_CONSOLE_MODE:
     st.markdown(
         """
         <style>
+            /* ── Layout ── */
             .main .block-container {
-                max-width: 680px;
-                padding-top: 1rem;
-                padding-bottom: 2rem;
-                padding-left: 0.9rem;
-                padding-right: 0.9rem;
+                max-width: 720px;
+                padding-top: 1.6rem;
+                padding-bottom: 3rem;
+                padding-left: 1.1rem;
+                padding-right: 1.1rem;
             }
-            h1 {
-                font-size: 1.55rem !important;
-                margin-bottom: 0.4rem !important;
+
+            /* ── Tipografía ── */
+            h1 { font-size: 1.7rem !important; margin-bottom: 0.15rem !important; letter-spacing: -0.02em; }
+            h2 { font-size: 1.15rem !important; }
+            .stTextArea textarea { font-size: 1rem; line-height: 1.55; border-radius: 10px !important; }
+
+            /* ── Header badge fuente ── */
+            .source-badge {
+                display: inline-block;
+                background: #eef2ff;
+                color: #3b4fa8;
+                border: 1px solid #c7d2fe;
+                border-radius: 20px;
+                padding: 0.18rem 0.75rem;
+                font-size: 0.78rem;
+                font-weight: 500;
+                margin-top: 0.25rem;
             }
-            .stTextArea textarea {
-                font-size: 1rem;
+
+            /* ── Tarjeta entrada de glosa ── */
+            .gloss-card {
+                background: #fff;
+                border: 1px solid #e2e8f0;
+                border-left: 4px solid #4f6ef7;
+                border-radius: 10px;
+                padding: 0.9rem 1.1rem 0.75rem 1.1rem;
+                margin-bottom: 0.85rem;
+                box-shadow: 0 1px 4px rgba(0,0,0,0.06);
             }
-            [data-testid="stMetricValue"] {
-                font-size: 1rem;
+            .gloss-card.not-found {
+                border-left-color: #f87171;
+                background: #fff9f9;
             }
-            .lemma-line {
-                font-size: 1.2rem;
-                font-weight: 700;
-                color: #0b2e6b;
-                margin-bottom: 0.2rem;
+            .gloss-card-header {
+                display: flex;
+                align-items: baseline;
+                gap: 0.5rem;
+                margin-bottom: 0.5rem;
+                flex-wrap: wrap;
             }
-            .gram-line {
-                color: #1f5fbf;
+            .gloss-num {
+                font-size: 0.78rem;
+                color: #9ca3af;
+                font-weight: 600;
+                min-width: 1.4rem;
+            }
+            .gloss-word {
+                font-size: 1.25rem;
+                font-weight: 800;
+                color: #1e3a6e;
+                letter-spacing: 0.01em;
+            }
+            .gloss-fallback {
+                font-size: 0.8rem;
+                color: #6b7280;
                 font-style: italic;
             }
+            .pos-badge {
+                display: inline-block;
+                background: #dbeafe;
+                color: #1d4ed8;
+                border-radius: 6px;
+                padding: 0.1rem 0.55rem;
+                font-size: 0.75rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.04em;
+            }
+            .not-found .pos-badge { background: #fee2e2; color: #b91c1c; }
+
+            /* ── Filas de datos ── */
+            .gloss-fields { display: grid; gap: 0.28rem; }
+            .gloss-row {
+                display: flex;
+                gap: 0.4rem;
+                font-size: 0.92rem;
+                line-height: 1.45;
+                flex-wrap: wrap;
+            }
+            .gloss-label {
+                color: #6b7280;
+                font-weight: 600;
+                white-space: nowrap;
+                min-width: 6.5rem;
+                font-size: 0.82rem;
+                text-transform: uppercase;
+                letter-spacing: 0.03em;
+                padding-top: 0.07rem;
+            }
+            .gloss-value { color: #1f2937; flex: 1; }
+            .gloss-meaning .gloss-value { color: #111827; font-weight: 500; }
+            .gloss-morph  .gloss-label { color: #7c3aed; }
+            .gloss-morph  .gloss-value { color: #5b21b6; font-style: italic; }
+            .gloss-root   .gloss-label { color: #065f46; }
+            .gloss-root   .gloss-value { color: #047857; font-style: italic; }
+            .gloss-etym   .gloss-label { color: #92400e; }
+            .gloss-etym   .gloss-value { color: #78350f; font-style: italic; }
+            .gloss-dash   { color: #d1d5db; }
+
+            /* ── Separadores sintácticos ── */
+            .sep-chip {
+                display: inline-block;
+                background: #f3f4f6;
+                border: 1px solid #e5e7eb;
+                border-radius: 999px;
+                padding: 0.07rem 0.55rem;
+                font-size: 0.78rem;
+                color: #9ca3af;
+                margin: 0.25rem 0.1rem;
+            }
+
+            /* ── Barra de cobertura ── */
+            .coverage-bar-wrap {
+                background: #f3f4f6;
+                border-radius: 999px;
+                height: 6px;
+                margin-top: 0.3rem;
+                overflow: hidden;
+            }
+            .coverage-bar-fill {
+                height: 100%;
+                border-radius: 999px;
+                background: linear-gradient(90deg, #4f6ef7, #06b6d4);
+                transition: width 0.4s ease;
+            }
+
+            /* ── Métricas ── */
+            [data-testid="stMetric"] {
+                background: #f8fafc;
+                border: 1px solid #e2e8f0;
+                border-radius: 10px;
+                padding: 0.7rem 0.9rem !important;
+            }
+            [data-testid="stMetricValue"] { font-size: 1.35rem !important; color: #1e3a6e; }
+            [data-testid="stMetricLabel"] { font-size: 0.75rem !important; color: #6b7280; }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
     st.title("📚 Pali Glosser")
-    st.caption("Glosa morfológica de Pali con enfoque mobile-first.")
+    st.markdown("<span style='color:#6b7280;font-size:0.97rem;'>Glosa morfológica de textos pali · Digital Pali Dictionary</span>", unsafe_allow_html=True)
 
+    # ── Carga de recursos ──────────────────────────────────────────────────
+    dict_name = "dpd"
+    with st.status("Cargando recursos DPD…", expanded=False) as status:
+        dpd_db_path = get_dpd_db_path()
+        try:
+            dictionary = load_dictionary()
+        except Exception as exc:
+            status.update(label="Error cargando Digital Pali Dictionary", state="error")
+            st.error(f"No se pudo cargar el diccionario DPD: {exc}")
+            st.stop()
+
+        if not isinstance(dictionary, dict) or not dictionary:
+            status.update(label="Error cargando Digital Pali Dictionary", state="error")
+            st.error("El diccionario DPD está vacío o inválido. Revisa `dpd_dictionary.json`.")
+            st.stop()
+
+        status.update(label="Digital Pali Dictionary listo", state="complete")
+
+    if dpd_db_path:
+        total_words = get_dpd_lookup_count(dpd_db_path)
+        src_label = f"📦 dpd.db · {total_words:,} entradas lookup"
+    else:
+        total_words = len(dictionary)
+        src_label = f"📄 DPD JSON · {total_words:,} entradas"
+    st.markdown(f'<span class="source-badge">{src_label}</span>', unsafe_allow_html=True)
+
+    st.write("")
+
+    # ── Sesiones guardadas (colapsadas) ───────────────────────────────────
     saved_sessions = load_saved_sessions()
     session_options = [""] + sorted(saved_sessions.keys())
 
@@ -962,109 +1468,97 @@ if not IS_CONSOLE_MODE:
     if st.session_state.get("session_picker_name") not in session_options:
         st.session_state["session_picker_name"] = ""
 
-    session_col, load_col, delete_col = st.columns([3, 1, 1])
-    with session_col:
-        st.selectbox(
-            "Sesiones guardadas",
-            session_options,
-            key="session_picker_name",
-            format_func=lambda session_name: _session_option_label(session_name, saved_sessions),
-        )
-    with load_col:
-        load_clicked = st.button(
-            "Cargar",
-            use_container_width=True,
-            disabled=st.session_state.get("session_picker_name") == "",
-        )
-    with delete_col:
-        delete_clicked = st.button(
-            "Borrar",
-            use_container_width=True,
-            disabled=st.session_state.get("session_picker_name") == "",
-        )
-
-    if load_clicked:
-        selected_name = st.session_state.get("session_picker_name")
-        selected_session = saved_sessions.get(selected_name)
-        if selected_session:
-            apply_loaded_session(selected_session)
-            st.success(f"Sesión cargada: {selected_name}")
-            st.rerun()
-        else:
-            st.warning("No se pudo cargar la sesión seleccionada.")
-
-    if delete_clicked:
-        selected_name = st.session_state.get("session_picker_name")
-        if selected_name in saved_sessions:
-            st.session_state["pending_delete_session_name"] = selected_name
-            st.rerun()
-        else:
-            st.warning("No se pudo borrar la sesión seleccionada.")
-
-    pending_delete_name = st.session_state.get("pending_delete_session_name", "")
-    if pending_delete_name:
-        st.warning(f"¿Seguro que deseas borrar la sesión '{pending_delete_name}'?")
-        confirm_delete_col, cancel_delete_col = st.columns(2)
-        with confirm_delete_col:
-            confirm_delete_clicked = st.button("Sí, borrar sesión", use_container_width=True)
-        with cancel_delete_col:
-            cancel_delete_clicked = st.button("Cancelar borrado", use_container_width=True)
-
-        if confirm_delete_clicked:
-            sessions = load_saved_sessions()
-            sessions.pop(pending_delete_name, None)
-            persist_saved_sessions(sessions)
-            st.session_state["pending_delete_session_name"] = ""
-            st.session_state["pending_session_picker_name"] = ""
-            st.success(f"Sesión borrada: {pending_delete_name}")
-            st.rerun()
-
-        if cancel_delete_clicked:
-            st.session_state["pending_delete_session_name"] = ""
-            st.rerun()
-
-    dict_option = st.selectbox(
-        "Diccionario",
-        ["Digital Pali Dictionary", "Diccionario Local"],
-        key="dict_option",
-    )
-    dict_name = _dict_option_to_name(dict_option)
-
-    dpd_db_path = get_dpd_db_path() if dict_name == "dpd" else ""
-    dictionary = load_dictionary(dict_name)
-    if dict_name == "dpd" and dpd_db_path:
-        total_words = get_dpd_lookup_count(dpd_db_path)
-        st.caption(f"Fuente: dpd.db (SQLite oficial) · Entradas lookup: {total_words}")
-    else:
-        total_words = len(dictionary)
-        if dict_name == "dpd":
-            st.caption(
-                f"Fuente: JSON local (fallback) · Entradas: {total_words}. Para mejor precisión usa dpd.db; en cloud también soporta dpd_dictionary.json.gz o DPD_JSON_URL"
+    sessions_label = f"🗂 Sesiones guardadas ({len(saved_sessions)})" if saved_sessions else "🗂 Sesiones guardadas"
+    with st.expander(sessions_label, expanded=False):
+        session_col, load_col, delete_col = st.columns([3, 1, 1])
+        with session_col:
+            st.selectbox(
+                "Seleccionar sesión",
+                session_options,
+                key="session_picker_name",
+                format_func=lambda session_name: _session_option_label(session_name, saved_sessions),
+                label_visibility="collapsed",
             )
-        else:
-            st.caption(f"Entradas disponibles: {total_words}")
+        with load_col:
+            load_clicked = st.button(
+                "↩ Cargar",
+                use_container_width=True,
+                disabled=st.session_state.get("session_picker_name") == "",
+            )
+        with delete_col:
+            delete_clicked = st.button(
+                "🗑 Borrar",
+                use_container_width=True,
+                disabled=st.session_state.get("session_picker_name") == "",
+            )
 
+        if load_clicked:
+            selected_name = st.session_state.get("session_picker_name")
+            selected_session = saved_sessions.get(selected_name)
+            if selected_session:
+                apply_loaded_session(selected_session)
+                st.toast(f"Sesión cargada: {selected_name}", icon="✅")
+                st.rerun()
+            else:
+                st.toast("No se pudo cargar la sesión seleccionada.", icon="⚠️")
+
+        if delete_clicked:
+            selected_name = st.session_state.get("session_picker_name")
+            if selected_name in saved_sessions:
+                st.session_state["pending_delete_session_name"] = selected_name
+                st.rerun()
+            else:
+                st.toast("No se pudo borrar la sesión seleccionada.", icon="⚠️")
+
+        pending_delete_name = st.session_state.get("pending_delete_session_name", "")
+        if pending_delete_name:
+            st.warning(f"¿Seguro que deseas borrar **{pending_delete_name}**?")
+            confirm_delete_col, cancel_delete_col = st.columns(2)
+            with confirm_delete_col:
+                confirm_delete_clicked = st.button("Sí, borrar", use_container_width=True, type="primary")
+            with cancel_delete_col:
+                cancel_delete_clicked = st.button("Cancelar", use_container_width=True)
+
+            if confirm_delete_clicked:
+                sessions = load_saved_sessions()
+                sessions.pop(pending_delete_name, None)
+                persist_saved_sessions(sessions)
+                st.session_state["pending_delete_session_name"] = ""
+                st.session_state["pending_session_picker_name"] = ""
+                st.toast(f"Sesión borrada: {pending_delete_name}", icon="🗑️")
+                st.rerun()
+
+            if cancel_delete_clicked:
+                st.session_state["pending_delete_session_name"] = ""
+                st.rerun()
+
+    # ── Entrada de texto ───────────────────────────────────────────────────
     pali_text = st.text_area(
-        "Texto Pali",
-        placeholder="Ej: dhammo buddho sangha...",
-        height=170,
+        "✍️ Texto Pali",
+        placeholder="Ej: namo tassa bhagavato arahato sammāsambuddhassa…",
+        height=160,
         key="pali_text_input",
     )
 
-    generate_clicked = st.button("Generar glosa", use_container_width=True, type="primary")
+    btn_col, example_col = st.columns([3, 1])
+    with btn_col:
+        generate_clicked = st.button("⚡ Generar glosa", use_container_width=True, type="primary")
+    with example_col:
+        if not pali_text.strip():
+            if st.button("Ejemplo", use_container_width=True):
+                st.session_state["pali_text_input"] = "namo tassa bhagavato arahato sammāsambuddhassa"
+                st.rerun()
 
     if generate_clicked:
         if pali_text.strip():
-            with st.spinner("Generando glosa… por favor espera"):
-                if dict_name == "dpd" and dpd_db_path:
+            with st.spinner("Analizando texto pali…"):
+                if dpd_db_path:
                     words = tuple(tokenize_pali_text(pali_text))
                     lookup_map = lookup_words_in_dpd(words, dpd_db_path)
-                    local_fallback = load_dictionary("local")
-                    combined_fallback = {**local_fallback, **dictionary}
                     gloss_entries = process_pali_with_lookup_map(
                         pali_text,
                         lookup_map,
-                        fallback_dictionary=combined_fallback,
+                        fallback_dictionary=dictionary,
                     )
                 else:
                     gloss_entries = process_pali_text(pali_text, dictionary)
@@ -1086,6 +1580,7 @@ if not IS_CONSOLE_MODE:
             st.session_state.gloss_word_total = word_total
             st.session_state.gloss_found_words = found_words
             st.session_state.gloss_coverage = coverage
+            st.toast("Glosa generada", icon="✨")
         else:
             st.session_state.generated_gloss = False
             st.session_state.gloss_entries = []
@@ -1093,34 +1588,51 @@ if not IS_CONSOLE_MODE:
             st.info("Ingresa texto en Pali para generar la glosa.")
 
     if st.session_state.generated_gloss:
-        st.caption(
-            f"Palabras: {st.session_state.gloss_word_total} · Encontradas: {st.session_state.gloss_found_words} · Cobertura: {st.session_state.gloss_coverage:.1f}%"
+        # ── Métricas de cobertura ──────────────────────────────────────────
+        st.write("")
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("Palabras", st.session_state.gloss_word_total)
+        mc2.metric("Encontradas", st.session_state.gloss_found_words)
+        mc3.metric("Cobertura", f"{st.session_state.gloss_coverage:.1f}%")
+        cov = st.session_state.gloss_coverage
+        st.markdown(
+            f'<div class="coverage-bar-wrap"><div class="coverage-bar-fill" style="width:{min(cov,100):.1f}%"></div></div>',
+            unsafe_allow_html=True,
         )
-        st.divider()
+        st.write("")
 
-        st.subheader("Glosa filológica")
+        # ── Glosa filológica ───────────────────────────────────────────────
+        st.subheader("📖 Glosa filológica")
         render_philological_gloss(st.session_state.gloss_entries)
 
-        st.download_button(
-            label="Descargar compacto (.txt)",
-            data=st.session_state.gloss_compact_text,
-            file_name="pali_gloss_compact.txt",
-            mime="text/plain",
-            use_container_width=True,
-        )
-        render_copy_button(
-            st.session_state.gloss_rich_text,
-            "Copiar glosa enriquecida",
-            "rich",
-        )
-        render_copy_button(
-            st.session_state.gloss_compact_text,
-            "Copiar glosa compacta",
-            "compact",
-        )
+        # ── Exportar ──────────────────────────────────────────────────────
+        st.write("")
+        st.markdown("**Exportar**")
+        exp_col1, exp_col2, exp_col3 = st.columns(3)
+        with exp_col1:
+            st.download_button(
+                label="⬇ Descargar .txt",
+                data=st.session_state.gloss_compact_text,
+                file_name="pali_gloss_compact.txt",
+                mime="text/plain",
+                use_container_width=True,
+            )
+        with exp_col2:
+            render_copy_button(
+                st.session_state.gloss_rich_text,
+                "📋 Copiar enriquecida",
+                "rich",
+            )
+        with exp_col3:
+            render_copy_button(
+                st.session_state.gloss_compact_text,
+                "📋 Copiar compacta",
+                "compact",
+            )
 
+        # ── Guardar sesión ─────────────────────────────────────────────────
         st.divider()
-        save_session_clicked = st.button("Guardar sesión", use_container_width=True)
+        save_session_clicked = st.button("💾 Guardar sesión", use_container_width=True)
         if save_session_clicked:
             st.session_state["show_save_session_form"] = True
 
@@ -1135,7 +1647,7 @@ if not IS_CONSOLE_MODE:
             )
             save_col, cancel_col = st.columns(2)
             with save_col:
-                confirm_save_clicked = st.button("Confirmar guardado", use_container_width=True)
+                confirm_save_clicked = st.button("Confirmar guardado", use_container_width=True, type="primary")
             with cancel_col:
                 cancel_save_clicked = st.button("Cancelar", use_container_width=True)
 
@@ -1147,7 +1659,7 @@ if not IS_CONSOLE_MODE:
             if confirm_save_clicked:
                 session_name = st.session_state.get("save_session_name_input", "").strip()
                 if not session_name:
-                    st.warning("Escribe un nombre para guardar la sesión.")
+                    st.toast("Escribe un nombre para guardar la sesión.", icon="⚠️")
                 else:
                     sessions = load_saved_sessions()
                     sessions[session_name] = build_session_payload(dict_name, pali_text)
@@ -1155,8 +1667,8 @@ if not IS_CONSOLE_MODE:
                     st.session_state["pending_session_picker_name"] = session_name
                     st.session_state["show_save_session_form"] = False
                     st.session_state["pending_reset_save_input"] = True
-                    st.success(f"Sesión guardada: {session_name}")
+                    st.toast(f"Sesión guardada: {session_name}", icon="💾")
                     st.rerun()
     elif not pali_text.strip():
-        st.info("Ingresa texto en Pali para comenzar.")
+        st.info("✍️ Ingresa texto en Pali para comenzar.")
 
