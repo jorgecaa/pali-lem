@@ -118,6 +118,7 @@ def ensure_dpd_json_available():
 def _is_valid_dpd_db(path):
     if not path or not path.exists() or not path.is_file():
         return False
+    conn = None
     try:
         conn = sqlite3.connect(str(path))
         cursor = conn.cursor()
@@ -125,10 +126,12 @@ def _is_valid_dpd_db(path):
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='lookup' LIMIT 1"
         )
         result = cursor.fetchone()
-        conn.close()
         return result is not None
     except sqlite3.Error:
         return False
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _build_dpd_db_candidates():
