@@ -353,8 +353,13 @@ def ensure_dpd_db_available():
     return str(selected_db) if selected_db else ""
 
 
+@st.cache_data(ttl=604800, max_entries=1, show_spinner=False)
 def get_dpd_db_path():
-    """Encuentra una base `dpd.db` válida usando referencias relativas al proyecto."""
+    """Encuentra una base `dpd.db` válida usando referencias relativas al proyecto.
+
+    El resultado se cachea durante 1 hora para evitar re-escaneos, peticiones HEAD
+    y posibles descargas en cada rerun de Streamlit (por ejemplo, al pulsar 'Cargar sesión').
+    """
     return ensure_dpd_db_available()
 
 
