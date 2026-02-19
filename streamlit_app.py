@@ -444,12 +444,30 @@ def _generate_final_vowel_fallbacks(word):
     return _dedupe(candidates)
 
 
+def _is_final_long_vowel_shortening(original, candidate):
+    """True when candidate is original with its final long vowel (ā/ī/ū) shortened.
+
+    Pali words frequently end in a lengthened vowel due to ā+ti sandhi or
+    metrical requirements.  That is a natural phonological variant of the same
+    word, not a different lexical form, so it should not be flagged as an
+    approximate ('fallback') match.
+    """
+    for long_v, short_v in FINAL_LONG_VOWEL_MAP.items():
+        if original.endswith(long_v) and candidate == original[:-1] + short_v:
+            return True
+    return False
+
+
 def _resolve_entry_with_fallback(word, dictionary):
     normalized_word = _normalize_token(word)
     for candidate in _generate_final_vowel_fallbacks(normalized_word):
         entry = dictionary.get(candidate)
         if entry:
-            return entry, candidate != normalized_word, candidate
+            is_fallback = (
+                candidate != normalized_word
+                and not _is_final_long_vowel_shortening(normalized_word, candidate)
+            )
+            return entry, is_fallback, candidate
     return None, False, ""
 
 
@@ -726,7 +744,12 @@ def lookup_words_in_dpd(words, dpd_db_path):
                 "sanskrit_root": sanskrit_root or "N/A",
                 "etymology": etymology_label or "N/A",
                 "translation": merged_meaning or "N/A",
-                "match_type": "fallback" if matched_candidate != word else "exact",
+                "match_type": (
+                    "exact"
+                    if matched_candidate == word
+                    or _is_final_long_vowel_shortening(word, matched_candidate)
+                    else "fallback"
+                ),
                 "matched_form": matched_candidate,
             }
 
@@ -793,7 +816,12 @@ def lookup_words_in_dpd(words, dpd_db_path):
                 for candidate in word_candidates.get(word, [word]):
                     if candidate in lemma_map:
                         lemma_entry = dict(lemma_map[candidate])
-                        lemma_entry["match_type"] = "fallback" if candidate != word else "exact"
+                        lemma_entry["match_type"] = (
+                            "exact"
+                            if candidate == word
+                            or _is_final_long_vowel_shortening(word, candidate)
+                            else "fallback"
+                        )
                         lemma_entry["matched_form"] = candidate
                         result[word] = lemma_entry
                         break

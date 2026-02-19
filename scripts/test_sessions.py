@@ -428,6 +428,7 @@ class TestLongFinalVowelFallback(unittest.TestCase):
         self.assertEqual(app._generate_final_vowel_fallbacks("buddham"), ["buddham", "buddhaṃ"])
 
     def test_process_pali_text_uses_short_vowel_fallback(self):
+        """Long final vowel (ā+ti sandhi / meter) must be found without ≈ alarm."""
         dictionary = {
             "rāja": {
                 "meaning": "rey",
@@ -442,10 +443,12 @@ class TestLongFinalVowelFallback(unittest.TestCase):
         self.assertEqual(entries[0]["word"], "rājā")
         self.assertEqual(entries[0]["meaning"], "rey")
         self.assertEqual(entries[0]["part_of_speech"], "noun")
-        self.assertEqual(entries[0]["match_type"], "fallback")
+        # Long-vowel shortening is a natural Pali variant — not a fallback alarm.
+        self.assertEqual(entries[0]["match_type"], "exact")
         self.assertEqual(entries[0]["matched_form"], "rāja")
 
     def test_process_pali_with_lookup_map_uses_short_vowel_fallback(self):
+        """Long final ū (meter/sandhi) must be found without ≈ alarm."""
         lookup_map = {
             "bhikkhu": {
                 "meaning": "monje",
@@ -460,7 +463,8 @@ class TestLongFinalVowelFallback(unittest.TestCase):
         self.assertEqual(entries[0]["word"], "bhikkhū")
         self.assertEqual(entries[0]["meaning"], "monje")
         self.assertEqual(entries[0]["part_of_speech"], "noun")
-        self.assertEqual(entries[0]["match_type"], "fallback")
+        # Long-vowel shortening is a natural Pali variant — not a fallback alarm.
+        self.assertEqual(entries[0]["match_type"], "exact")
         self.assertEqual(entries[0]["matched_form"], "bhikkhu")
 
     def test_process_pali_with_lookup_map_uses_niggahita_fallback(self):
@@ -478,6 +482,7 @@ class TestLongFinalVowelFallback(unittest.TestCase):
         self.assertEqual(entries[0]["word"], "buddhaṃ")
         self.assertEqual(entries[0]["meaning"], "Buda (acusativo)")
         self.assertEqual(entries[0]["part_of_speech"], "noun")
+        # Niggahita variation is a real morphological change — keep the ≈ marker.
         self.assertEqual(entries[0]["match_type"], "fallback")
         self.assertEqual(entries[0]["matched_form"], "buddham")
 
@@ -502,6 +507,67 @@ class TestLongFinalVowelFallback(unittest.TestCase):
 
         self.assertIn("[≈ buddham]", compact)
         self.assertIn("[≈ buddham]", rich)
+
+    def test_long_vowel_sandhi_ti_no_alarm(self):
+        """Words elongated by ā+ti sandhi must not show ≈ alarm.
+
+        e.g. vapissāmī (= vapissāmi before 'ti') should resolve silently.
+        """
+        lookup_map = {
+            "vapissāmi": {
+                "meaning": "sembraré",
+                "morphology": "verb",
+                "part_of_speech": "verb",
+                "root": "N/A",
+                "translation": "sembraré",
+            }
+        }
+        for long_form in ("vapissāmī", "vinassissantī", "sossāmī"):
+            short_form = long_form[:-1] + "i"
+            lm = {
+                short_form: {
+                    "meaning": "test",
+                    "morphology": "verb",
+                    "part_of_speech": "verb",
+                    "root": "N/A",
+                    "translation": "test",
+                }
+            }
+            entries = app.process_pali_with_lookup_map(long_form, lm, fallback_dictionary={})
+            self.assertEqual(len(entries), 1, msg=f"No entry for {long_form!r}")
+            self.assertEqual(entries[0]["match_type"], "exact",
+                             msg=f"Expected exact for {long_form!r}, got {entries[0]['match_type']!r}")
+
+    def test_long_vowel_metrical_no_alarm(self):
+        """Words with metrically lengthened final ā must not show ≈ alarm."""
+        for long_form, short_form in [("pāpuṇeyyā", "pāpuṇeyya"), ("nibbānā", "nibbāna")]:
+            d = {
+                short_form: {
+                    "meaning": "test",
+                    "morphology": "noun",
+                    "part_of_speech": "noun",
+                    "root": "N/A",
+                    "translation": "test",
+                }
+            }
+            entries = app.process_pali_text(long_form, d)
+            self.assertEqual(len(entries), 1, msg=f"No entry for {long_form!r}")
+            self.assertEqual(entries[0]["match_type"], "exact",
+                             msg=f"Expected exact for {long_form!r}")
+            self.assertEqual(entries[0]["matched_form"], short_form)
+
+    def test_is_final_long_vowel_shortening(self):
+        """Helper must detect long-vowel shortening and not confuse other diffs."""
+        self.assertTrue(app._is_final_long_vowel_shortening("vapissāmī", "vapissāmi"))
+        self.assertTrue(app._is_final_long_vowel_shortening("nibbānā", "nibbāna"))
+        self.assertTrue(app._is_final_long_vowel_shortening("bhikkhū", "bhikkhu"))
+        self.assertTrue(app._is_final_long_vowel_shortening("rājā", "rāja"))
+        # Niggahita is NOT a long-vowel shortening
+        self.assertFalse(app._is_final_long_vowel_shortening("buddhaṃ", "buddham"))
+        # Identical words are not shortenings
+        self.assertFalse(app._is_final_long_vowel_shortening("dhamma", "dhamma"))
+        # Different word entirely
+        self.assertFalse(app._is_final_long_vowel_shortening("rājā", "raja"))
 
 
 if __name__ == "__main__":
