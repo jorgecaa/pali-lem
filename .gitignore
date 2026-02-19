@@ -165,3 +165,8 @@ cython_debug/
 
 # Local generated dictionaries
 dpd_dictionary.json
+
+# DPD database download artifacts
+dpd-db/.dpd_db_downloading
+dpd-db/.dpd_db_meta.json
+dpd-db/dpd.db

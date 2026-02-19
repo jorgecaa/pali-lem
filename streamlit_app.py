@@ -4,6 +4,7 @@ import json
 import re
 import os
 import sqlite3
+import threading
 import unicodedata
 import html
 import gzip
@@ -283,6 +284,37 @@ def _download_dpd_db(download_url, target_dir, target_db, timeout):
             archive_path.unlink()
 
 
+def _start_background_db_download(download_url, target_dir, target_db, timeout, meta, meta_path, remote_signature):
+    """Descarga dpd.db en un hilo de fondo para no bloquear el script de Streamlit."""
+    in_progress_file = target_dir / ".dpd_db_downloading"
+    try:
+        in_progress_file.open("x").close()
+    except FileExistsError:
+        return
+
+    def _worker():
+        try:
+            if _download_dpd_db(download_url, target_dir, target_db, timeout) and _is_valid_dpd_db(
+                target_db
+            ):
+                meta.update(
+                    {
+                        "download_url": download_url,
+                        "updated_at": _utcnow().isoformat(),
+                        "last_checked_at": _utcnow().isoformat(),
+                        "remote_signature": remote_signature,
+                    }
+                )
+                _save_json_file(meta_path, meta)
+                get_dpd_db_path.clear()
+        finally:
+            if in_progress_file.exists():
+                in_progress_file.unlink()
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+
 def ensure_dpd_db_available():
     """Asegura `dpd.db` local y lo actualiza periódicamente desde releases remotos."""
     module_dir = Path(__file__).resolve().parent
@@ -311,11 +343,12 @@ def ensure_dpd_db_available():
         return str(selected_db) if selected_db else ""
 
     timeout = int(os.environ.get("DPD_DB_DOWNLOAD_TIMEOUT", "300"))
+    head_timeout = int(os.environ.get("DPD_DB_HEAD_TIMEOUT", "10"))
     auto_update = _as_bool(os.environ.get("DPD_DB_AUTO_UPDATE", "1"), default=True)
     interval_hours = int(os.environ.get("DPD_DB_UPDATE_INTERVAL_HOURS", "24"))
 
     meta = _load_json_file(meta_path, default={})
-    remote_signature = _fetch_remote_signature(download_url, timeout)
+    remote_signature = _fetch_remote_signature(download_url, head_timeout)
     should_download = selected_db is None
 
     if selected_db is not None and auto_update:
@@ -336,20 +369,9 @@ def ensure_dpd_db_available():
             _save_json_file(meta_path, meta)
         return str(selected_db)
 
-    if _download_dpd_db(download_url, target_dir, target_db, timeout) and _is_valid_dpd_db(
-        target_db
-    ):
-        meta.update(
-            {
-                "download_url": download_url,
-                "updated_at": _utcnow().isoformat(),
-                "last_checked_at": _utcnow().isoformat(),
-                "remote_signature": remote_signature,
-            }
-        )
-        _save_json_file(meta_path, meta)
-        return str(target_db.resolve())
-
+    _start_background_db_download(
+        download_url, target_dir, target_db, timeout, meta.copy(), meta_path, remote_signature
+    )
     return str(selected_db) if selected_db else ""
 
 
