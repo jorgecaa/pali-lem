@@ -6,6 +6,7 @@ Ejecutar:
 
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -77,6 +78,27 @@ class TestLoadSavedSessions(unittest.TestCase):
         self.assertEqual(len(result), 2)
         self.assertIn("A", result)
         self.assertIn("B", result)
+
+
+# ---------------------------------------------------------------------------
+# _is_valid_dpd_db
+# ---------------------------------------------------------------------------
+
+class TestIsValidDpdDb(unittest.TestCase):
+
+    def test_closes_connection_when_sqlite_error(self):
+        with tempfile.NamedTemporaryFile(suffix=".db") as tmp:
+            path = Path(tmp.name)
+            mock_conn = MagicMock()
+            mock_cursor = MagicMock()
+            mock_cursor.execute.side_effect = sqlite3.Error("boom")
+            mock_conn.cursor.return_value = mock_cursor
+
+            with patch.object(app.sqlite3, "connect", return_value=mock_conn):
+                result = app._is_valid_dpd_db(path)
+
+            self.assertFalse(result)
+            mock_conn.close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
