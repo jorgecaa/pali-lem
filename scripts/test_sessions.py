@@ -5,9 +5,8 @@ Ejecutar:
 """
 
 import json
-import os
 import sys
-import tempfile
+import os
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -21,59 +20,37 @@ import streamlit_app as app  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _tmp_sessions_path(tmp_dir: str) -> Path:
-    return Path(tmp_dir) / "saved_sessions.json"
-
-
-# ---------------------------------------------------------------------------
 # load_saved_sessions
 # ---------------------------------------------------------------------------
 
 class TestLoadSavedSessions(unittest.TestCase):
 
-    def test_returns_empty_dict_when_file_missing(self):
-        with patch.object(app, "SAVED_SESSIONS_PATH", Path("/nonexistent/path/sessions.json")):
+    def test_returns_empty_dict_when_store_empty(self):
+        with patch.object(app, '_get_sessions_store', return_value={}):
             result = app.load_saved_sessions()
         self.assertEqual(result, {})
 
-    def test_loads_valid_json(self):
+    def test_loads_from_store(self):
         data = {"sesión1": {"pali_text": "namo tassa", "dict_name": "dpd"}}
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _tmp_sessions_path(tmp)
-            path.write_text(json.dumps(data), encoding="utf-8")
-            with patch.object(app, "SAVED_SESSIONS_PATH", path):
-                result = app.load_saved_sessions()
+        with patch.object(app, '_get_sessions_store', return_value=data):
+            result = app.load_saved_sessions()
         self.assertEqual(result, data)
 
-    def test_returns_empty_dict_on_corrupt_json(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _tmp_sessions_path(tmp)
-            path.write_text("{{NOT JSON}}", encoding="utf-8")
-            with patch.object(app, "SAVED_SESSIONS_PATH", path):
-                result = app.load_saved_sessions()
-        self.assertEqual(result, {})
-
-    def test_returns_empty_dict_when_root_is_list(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _tmp_sessions_path(tmp)
-            path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
-            with patch.object(app, "SAVED_SESSIONS_PATH", path):
-                result = app.load_saved_sessions()
-        self.assertEqual(result, {})
+    def test_returns_copy_not_reference(self):
+        """load_saved_sessions() debe devolver una copia, no el store mismo."""
+        data = {"s1": {"pali_text": "namo"}}
+        with patch.object(app, '_get_sessions_store', return_value=data):
+            result = app.load_saved_sessions()
+        result["extra"] = {}
+        self.assertNotIn("extra", data)
 
     def test_loads_multiple_sessions(self):
         data = {
             "A": {"pali_text": "namo", "dict_name": "dpd"},
             "B": {"pali_text": "tassa", "dict_name": "local"},
         }
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _tmp_sessions_path(tmp)
-            path.write_text(json.dumps(data), encoding="utf-8")
-            with patch.object(app, "SAVED_SESSIONS_PATH", path):
-                result = app.load_saved_sessions()
+        with patch.object(app, '_get_sessions_store', return_value=data):
+            result = app.load_saved_sessions()
         self.assertEqual(len(result), 2)
         self.assertIn("A", result)
         self.assertIn("B", result)
@@ -85,51 +62,34 @@ class TestLoadSavedSessions(unittest.TestCase):
 
 class TestPersistSavedSessions(unittest.TestCase):
 
-    def test_writes_json_file(self):
+    def test_updates_store(self):
+        store = {}
         data = {"mi sesión": {"pali_text": "namo", "dict_name": "dpd"}}
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _tmp_sessions_path(tmp)
-            with patch.object(app, "SAVED_SESSIONS_PATH", path):
-                app.persist_saved_sessions(data)
-            saved = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(saved, data)
+        with patch.object(app, '_get_sessions_store', return_value=store):
+            app.persist_saved_sessions(data)
+        self.assertEqual(store, data)
 
-    def test_overwrites_existing_file(self):
-        original = {"vieja": {"pali_text": "x"}}
+    def test_replaces_existing_store(self):
+        store = {"vieja": {"pali_text": "x"}}
         updated = {"nueva": {"pali_text": "y"}}
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _tmp_sessions_path(tmp)
-            path.write_text(json.dumps(original), encoding="utf-8")
-            with patch.object(app, "SAVED_SESSIONS_PATH", path):
-                app.persist_saved_sessions(updated)
-            saved = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(saved, updated)
-
-    def test_no_temp_file_left_behind(self):
-        data = {"s": {}}
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _tmp_sessions_path(tmp)
-            with patch.object(app, "SAVED_SESSIONS_PATH", path):
-                app.persist_saved_sessions(data)
-            temp = path.with_suffix(".json.part")
-        self.assertFalse(temp.exists())
+        with patch.object(app, '_get_sessions_store', return_value=store):
+            app.persist_saved_sessions(updated)
+        self.assertEqual(store, updated)
+        self.assertNotIn("vieja", store)
 
     def test_unicode_content_preserved(self):
+        store = {}
         data = {"Clase SN 56.11": {"pali_text": "サンスタ", "dict_name": "dpd"}}
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _tmp_sessions_path(tmp)
-            with patch.object(app, "SAVED_SESSIONS_PATH", path):
-                app.persist_saved_sessions(data)
-            saved = json.loads(path.read_text(encoding="utf-8"))
-        self.assertEqual(saved["Clase SN 56.11"]["pali_text"], "サンスタ")
+        with patch.object(app, '_get_sessions_store', return_value=store):
+            app.persist_saved_sessions(data)
+        self.assertEqual(store["Clase SN 56.11"]["pali_text"], "サンスタ")
 
     def test_roundtrip_load_persist(self):
+        store = {}
         data = {"s1": {"pali_text": "namo tassa", "dict_name": "dpd"}}
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _tmp_sessions_path(tmp)
-            with patch.object(app, "SAVED_SESSIONS_PATH", path):
-                app.persist_saved_sessions(data)
-                result = app.load_saved_sessions()
+        with patch.object(app, '_get_sessions_store', return_value=store):
+            app.persist_saved_sessions(data)
+            result = app.load_saved_sessions()
         self.assertEqual(result, data)
 
 
@@ -365,8 +325,8 @@ class TestFormatSavedAtSantiago(unittest.TestCase):
 
 class TestFullSessionCycle(unittest.TestCase):
 
-    def test_save_and_reload_via_file(self):
-        """Guarda una sesión en disco y la vuelve a cargar."""
+    def test_save_and_reload_via_cache(self):
+        """Guarda una sesión en el store y la vuelve a cargar."""
         payload = {
             "saved_at": "2026-02-19T12:00:00Z",
             "dict_name": "dpd",
@@ -379,34 +339,29 @@ class TestFullSessionCycle(unittest.TestCase):
             "gloss_found_words": 0,
             "gloss_coverage": 0.0,
         }
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _tmp_sessions_path(tmp)
-            with patch.object(app, "SAVED_SESSIONS_PATH", path):
-                # Guardar
-                sessions = {}
-                sessions["Clase SN"] = payload
-                app.persist_saved_sessions(sessions)
-                # Cargar
-                loaded = app.load_saved_sessions()
+        store = {}
+        with patch.object(app, '_get_sessions_store', return_value=store):
+            sessions = {}
+            sessions["Clase SN"] = payload
+            app.persist_saved_sessions(sessions)
+            loaded = app.load_saved_sessions()
 
         self.assertIn("Clase SN", loaded)
         self.assertEqual(loaded["Clase SN"]["pali_text"], "namo tassa bhagavato")
         self.assertEqual(loaded["Clase SN"]["dict_name"], "dpd")
 
     def test_delete_session(self):
-        """Elimina una sesión del fichero y verifica que no se puede volver a cargar."""
+        """Elimina una sesión del store y verifica que no se puede volver a cargar."""
         data = {
             "Clase A": {"pali_text": "namo"},
             "Clase B": {"pali_text": "tassa"},
         }
-        with tempfile.TemporaryDirectory() as tmp:
-            path = _tmp_sessions_path(tmp)
-            with patch.object(app, "SAVED_SESSIONS_PATH", path):
-                app.persist_saved_sessions(data)
-                sessions = app.load_saved_sessions()
-                del sessions["Clase A"]
-                app.persist_saved_sessions(sessions)
-                final = app.load_saved_sessions()
+        store = dict(data)
+        with patch.object(app, '_get_sessions_store', return_value=store):
+            sessions = app.load_saved_sessions()
+            del sessions["Clase A"]
+            app.persist_saved_sessions(sessions)
+            final = app.load_saved_sessions()
 
         self.assertNotIn("Clase A", final)
         self.assertIn("Clase B", final)

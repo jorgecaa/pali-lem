@@ -43,7 +43,6 @@ WORD_RE = re.compile(r"[^\W\d_]+", flags=re.UNICODE)
 TOKEN_RE = re.compile(r"[^\W\d_]+|\.\.\.|[.,;:!?…—–\-()«»\"'“”‘’¶]", flags=re.UNICODE)
 
 IS_CONSOLE_MODE = os.environ.get("PALI_LEM_NO_UI") == "1"
-SAVED_SESSIONS_PATH = Path(__file__).parent / "saved_sessions.json"
 
 # Configurar página
 if not IS_CONSOLE_MODE:
@@ -1223,12 +1222,19 @@ function {function_name}() {{
     )
 
 
+_DICT_NAME_TO_OPTION = {
+    "dpd": "Digital Pali Dictionary",
+    "local": "Diccionario Local",
+}
+_DICT_OPTION_TO_NAME = {v: k for k, v in _DICT_NAME_TO_OPTION.items()}
+
+
 def _dict_name_to_option(dict_name):
-    return "Digital Pali Dictionary"
+    return _DICT_NAME_TO_OPTION.get(dict_name, "Digital Pali Dictionary")
 
 
 def _dict_option_to_name(dict_option):
-    return "dpd"
+    return _DICT_OPTION_TO_NAME.get(dict_option, "dpd")
 
 
 def _session_option_label(session_name, sessions):
@@ -1256,25 +1262,30 @@ def _format_saved_at_santiago(saved_at):
         return saved_at
 
 
-def load_saved_sessions():
-    if not SAVED_SESSIONS_PATH.exists():
-        return {}
+@st.cache_resource
+def _get_sessions_store():
+    """Server-side in-memory session store backed by Streamlit's resource cache.
 
-    try:
-        with open(SAVED_SESSIONS_PATH, "r", encoding="utf-8") as file:
-            data = json.load(file)
-        return data if isinstance(data, dict) else {}
-    except (json.JSONDecodeError, OSError):
-        return {}
+    The returned dict is a singleton that persists for the lifetime of the
+    Streamlit server process and is shared across all reruns.
+    """
+    return {}
+
+
+def load_saved_sessions():
+    # Return a copy so callers cannot accidentally mutate the shared cache store.
+    return dict(_get_sessions_store())
 
 
 def persist_saved_sessions(sessions):
-    _save_json_file(SAVED_SESSIONS_PATH, sessions)
+    store = _get_sessions_store()
+    store.clear()
+    store.update(sessions)
 
 
 def build_session_payload(dict_name, pali_text):
     return {
-        "saved_at": _utcnow().isoformat(timespec="seconds"),
+        "saved_at": _utcnow().isoformat(timespec="seconds").replace("+00:00", "Z"),
 
         "dict_name": dict_name,
         "pali_text": pali_text,
@@ -1289,7 +1300,7 @@ def build_session_payload(dict_name, pali_text):
 
 
 def apply_loaded_session(session_data):
-    dict_name = "dpd"
+    dict_name = str(session_data.get("dict_name", "dpd"))
 
     st.session_state["dict_option"] = _dict_name_to_option(dict_name)
     st.session_state["pali_text_input"] = str(session_data.get("pali_text", ""))
