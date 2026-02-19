@@ -93,6 +93,63 @@ Si `dpd.db` no está disponible, la app usa `dpd_dictionary.json` como fallback.
    - Raíz etimológica
 4. **Descarga** el resultado en `.txt`
 
+## Pruebas por consola (argv + debug)
+
+Para probar la lógica sin abrir Streamlit:
+
+```bash
+python3 scripts/app_cli.py --text "dhammo buddha sangha" --dict dpd --format compact --debug
+```
+
+Opciones útiles:
+
+- `--text "..."`: texto directo
+- `--file ruta.txt`: leer texto desde archivo
+- `--dict dpd|local`: fuente de diccionario
+- `--db /ruta/dpd.db`: ruta explícita de base SQLite
+- `--format compact|rich`: tipo de salida
+- `--debug`: imprime fuente usada, cobertura y palabras faltantes
+
+También puedes usar `stdin`:
+
+```bash
+echo "anicca dukkha anattā" | python3 scripts/app_cli.py --debug
+```
+
+Atajo con `make`:
+
+```bash
+make cli-test TEXT="dhammo buddha sangha"
+```
+
+Variables opcionales:
+- `DICT=dpd|local`
+- `FORMAT=compact|rich`
+- `DEBUG=1|0`
+- `DB=/ruta/dpd.db`
+- `FILE=entrada.txt` (para `make cli-file`)
+
+## Batería personalizada de pruebas
+
+Valida de forma automática la salida de la app (cobertura, palabras clave, etimología, separadores y formato):
+
+```bash
+make battery
+```
+
+Comparación opcional contra `dpdict.net`:
+
+```bash
+make battery-online
+```
+
+Variables útiles:
+- `DICT=dpd|local`
+- `BMIN=90` (cobertura mínima esperada)
+- `ONLINE_WORDS="buddha,dhamma,saṅgha,anicca"`
+- `ONLINE_MIN=0.75` (umbral match de campos online)
+- `DB=/ruta/dpd.db`
+
 ## Ejemplo
 
 **Entrada:**

@@ -94,6 +94,19 @@ def _dedupe(values):
     return result
 
 
+def _build_etymology_label(derived_from, construction, stem, pattern):
+    parts = []
+    if derived_from:
+        parts.append(f"deriva de {derived_from}")
+    if construction:
+        parts.append(f"construcción: {construction}")
+    if stem:
+        parts.append(f"tema: {stem}")
+    if pattern:
+        parts.append(f"patrón: {pattern}")
+    return " · ".join(parts)
+
+
 def build_dpd_from_sqlite(dpd_db_path: Path):
     """Build a full dictionary using the official dpd.db SQLite database."""
 
@@ -107,7 +120,7 @@ def build_dpd_from_sqlite(dpd_db_path: Path):
         for row in conn.execute(
             """
             SELECT id, lemma_1, pos, grammar, meaning_1, meaning_2, meaning_lit,
-                   root_key, root_sign
+                     root_key, root_sign, sanskrit, derived_from, construction, stem, pattern
             FROM dpd_headwords
             """
         ):
@@ -119,6 +132,12 @@ def build_dpd_from_sqlite(dpd_db_path: Path):
             root_key = row["root_key"] or ""
             root_sign = row["root_sign"] or ""
             root = f"{root_sign}{root_key}" if root_key else ""
+            etymology = _build_etymology_label(
+                (row["derived_from"] or "").strip(),
+                (row["construction"] or "").strip(),
+                (row["stem"] or "").strip(),
+                (row["pattern"] or "").strip(),
+            )
 
             headwords[row["id"]] = {
                 "lemma": (row["lemma_1"] or "").strip(),
@@ -126,6 +145,8 @@ def build_dpd_from_sqlite(dpd_db_path: Path):
                 "grammar": row["grammar"] or "",
                 "meaning": meaning,
                 "root": root,
+                "sanskrit_root": (row["sanskrit"] or "").strip(),
+                "etymology": etymology,
             }
 
         for data in headwords.values():
@@ -137,7 +158,9 @@ def build_dpd_from_sqlite(dpd_db_path: Path):
                 "meaning": meaning,
                 "morphology": data["grammar"] or "N/A",
                 "part_of_speech": data["pos"] or "N/A",
-                "root": data["root"] or "N/A",
+                "root": data["root"] or data["etymology"] or "N/A",
+                "sanskrit_root": data["sanskrit_root"] or "N/A",
+                "etymology": data["etymology"] or "N/A",
                 "translation": meaning,
             }
 
@@ -161,6 +184,8 @@ def build_dpd_from_sqlite(dpd_db_path: Path):
             meanings = []
             lemmas = []
             root = ""
+            sanskrit_root = ""
+            etymology = ""
             for headword_id in headword_ids:
                 hw = headwords.get(headword_id)
                 if not hw:
@@ -171,6 +196,10 @@ def build_dpd_from_sqlite(dpd_db_path: Path):
                     lemmas.append(hw["lemma"])
                 if not root and hw["root"]:
                     root = hw["root"]
+                if not sanskrit_root and hw.get("sanskrit_root"):
+                    sanskrit_root = hw["sanskrit_root"]
+                if not etymology and hw.get("etymology"):
+                    etymology = hw["etymology"]
 
             meaning = "; ".join(_dedupe(meanings)) or "; ".join(_dedupe(lemmas))
             pos = "; ".join(_dedupe(pos_list))
@@ -180,7 +209,9 @@ def build_dpd_from_sqlite(dpd_db_path: Path):
                 "meaning": meaning or "N/A",
                 "morphology": morph or "N/A",
                 "part_of_speech": pos or "N/A",
-                "root": root or "N/A",
+                "root": root or etymology or "N/A",
+                "sanskrit_root": sanskrit_root or "N/A",
+                "etymology": etymology or "N/A",
                 "translation": meaning or "N/A",
             }
     finally:
