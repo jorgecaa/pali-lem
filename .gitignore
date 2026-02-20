@@ -170,3 +170,6 @@ dpd_dictionary.json
 dpd-db/.dpd_db_downloading
 dpd-db/.dpd_db_meta.json
 dpd-db/dpd.db
+
+# Local generated sessions
+saved_sessions.json
