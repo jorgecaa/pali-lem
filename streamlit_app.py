@@ -43,6 +43,7 @@ WORD_RE = re.compile(r"[^\W\d_]+", flags=re.UNICODE)
 TOKEN_RE = re.compile(r"[^\W\d_]+|\.\.\.|[.,;:!?…—–\-()«»\"'“”‘’¶]", flags=re.UNICODE)
 
 IS_CONSOLE_MODE = os.environ.get("PALI_LEM_NO_UI") == "1"
+SAVED_SESSIONS_PATH = Path(__file__).parent / "saved_sessions.json"
 
 # Configurar página
 if not IS_CONSOLE_MODE:
@@ -1268,8 +1269,18 @@ def _get_sessions_store():
 
     The returned dict is a singleton that persists for the lifetime of the
     Streamlit server process and is shared across all reruns.
+    Initialized from saved_sessions.json if it exists (migration / restore after restart).
     """
-    return {}
+    store: dict = {}
+    if SAVED_SESSIONS_PATH.exists():
+        try:
+            with open(SAVED_SESSIONS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                store.update(data)
+        except (json.JSONDecodeError, OSError, ValueError):
+            pass
+    return store
 
 
 def load_saved_sessions():
@@ -1281,6 +1292,9 @@ def persist_saved_sessions(sessions):
     store = _get_sessions_store()
     store.clear()
     store.update(sessions)
+    # Also persist to disk so sessions survive server restarts.
+    # _save_json_file silently ignores write errors (e.g. read-only filesystems).
+    _save_json_file(SAVED_SESSIONS_PATH, sessions)
 
 
 def build_session_payload(dict_name, pali_text):

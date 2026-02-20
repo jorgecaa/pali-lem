@@ -7,6 +7,7 @@ Ejecutar:
 import json
 import sys
 import os
+import tempfile
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -65,14 +66,16 @@ class TestPersistSavedSessions(unittest.TestCase):
     def test_updates_store(self):
         store = {}
         data = {"mi sesión": {"pali_text": "namo", "dict_name": "dpd"}}
-        with patch.object(app, '_get_sessions_store', return_value=store):
+        with patch.object(app, '_get_sessions_store', return_value=store), \
+             patch.object(app, '_save_json_file'):
             app.persist_saved_sessions(data)
         self.assertEqual(store, data)
 
     def test_replaces_existing_store(self):
         store = {"vieja": {"pali_text": "x"}}
         updated = {"nueva": {"pali_text": "y"}}
-        with patch.object(app, '_get_sessions_store', return_value=store):
+        with patch.object(app, '_get_sessions_store', return_value=store), \
+             patch.object(app, '_save_json_file'):
             app.persist_saved_sessions(updated)
         self.assertEqual(store, updated)
         self.assertNotIn("vieja", store)
@@ -80,17 +83,28 @@ class TestPersistSavedSessions(unittest.TestCase):
     def test_unicode_content_preserved(self):
         store = {}
         data = {"Clase SN 56.11": {"pali_text": "サンスタ", "dict_name": "dpd"}}
-        with patch.object(app, '_get_sessions_store', return_value=store):
+        with patch.object(app, '_get_sessions_store', return_value=store), \
+             patch.object(app, '_save_json_file'):
             app.persist_saved_sessions(data)
         self.assertEqual(store["Clase SN 56.11"]["pali_text"], "サンスタ")
 
     def test_roundtrip_load_persist(self):
         store = {}
         data = {"s1": {"pali_text": "namo tassa", "dict_name": "dpd"}}
-        with patch.object(app, '_get_sessions_store', return_value=store):
+        with patch.object(app, '_get_sessions_store', return_value=store), \
+             patch.object(app, '_save_json_file'):
             app.persist_saved_sessions(data)
             result = app.load_saved_sessions()
         self.assertEqual(result, data)
+
+    def test_persist_writes_to_file(self):
+        """persist_saved_sessions() también debe persistir en disco."""
+        store = {}
+        data = {"s1": {"pali_text": "namo"}}
+        with patch.object(app, '_get_sessions_store', return_value=store), \
+             patch.object(app, '_save_json_file') as mock_save:
+            app.persist_saved_sessions(data)
+        mock_save.assert_called_once_with(app.SAVED_SESSIONS_PATH, data)
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +334,79 @@ class TestFormatSavedAtSantiago(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# _get_sessions_store initialization from file
+# ---------------------------------------------------------------------------
+
+class TestGetSessionsStoreInit(unittest.TestCase):
+    """Tests que ejercen la lógica de inicialización de _get_sessions_store()
+    llamando a la función real tras limpiar la caché con .clear()."""
+
+    def setUp(self):
+        # Always clear the resource cache before each test so the
+        # initialization logic runs fresh (reads the file anew).
+        app._get_sessions_store.clear()
+
+    def tearDown(self):
+        # Restore a clean cache so other tests are not affected.
+        app._get_sessions_store.clear()
+
+    def test_loads_from_file_on_init(self):
+        """_get_sessions_store() debe cargar sesiones de saved_sessions.json al iniciar."""
+        existing = {
+            "session_antigua": {
+                "pali_text": "namo tassa",
+                "dict_name": "dpd",
+            }
+        }
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", encoding="utf-8", delete=False
+        ) as f:
+            json.dump(existing, f, ensure_ascii=False)
+            tmp_path = Path(f.name)
+        try:
+            with patch.object(app, 'SAVED_SESSIONS_PATH', tmp_path):
+                store = app._get_sessions_store()
+            self.assertIn("session_antigua", store)
+            self.assertEqual(store["session_antigua"]["pali_text"], "namo tassa")
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_returns_empty_dict_when_file_missing(self):
+        """_get_sessions_store() debe devolver {} si el archivo no existe."""
+        with patch.object(app, 'SAVED_SESSIONS_PATH', Path("/nonexistent/sessions.json")):
+            store = app._get_sessions_store()
+        self.assertEqual(store, {})
+
+    def test_ignores_corrupt_file_on_init(self):
+        """_get_sessions_store() no debe lanzar error si el archivo está corrupto."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", encoding="utf-8", delete=False
+        ) as f:
+            f.write("{{NOT VALID JSON}}")
+            tmp_path = Path(f.name)
+        try:
+            with patch.object(app, 'SAVED_SESSIONS_PATH', tmp_path):
+                store = app._get_sessions_store()
+            self.assertEqual(store, {})
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def test_ignores_non_dict_file_on_init(self):
+        """_get_sessions_store() no debe fallar si el archivo contiene una lista."""
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", encoding="utf-8", delete=False
+        ) as f:
+            json.dump([1, 2, 3], f)
+            tmp_path = Path(f.name)
+        try:
+            with patch.object(app, 'SAVED_SESSIONS_PATH', tmp_path):
+                store = app._get_sessions_store()
+            self.assertEqual(store, {})
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
 # Full save → load → persist cycle
 # ---------------------------------------------------------------------------
 
@@ -340,7 +427,8 @@ class TestFullSessionCycle(unittest.TestCase):
             "gloss_coverage": 0.0,
         }
         store = {}
-        with patch.object(app, '_get_sessions_store', return_value=store):
+        with patch.object(app, '_get_sessions_store', return_value=store), \
+             patch.object(app, '_save_json_file'):
             sessions = {}
             sessions["Clase SN"] = payload
             app.persist_saved_sessions(sessions)
@@ -357,7 +445,8 @@ class TestFullSessionCycle(unittest.TestCase):
             "Clase B": {"pali_text": "tassa"},
         }
         store = dict(data)
-        with patch.object(app, '_get_sessions_store', return_value=store):
+        with patch.object(app, '_get_sessions_store', return_value=store), \
+             patch.object(app, '_save_json_file'):
             sessions = app.load_saved_sessions()
             del sessions["Clase A"]
             app.persist_saved_sessions(sessions)
