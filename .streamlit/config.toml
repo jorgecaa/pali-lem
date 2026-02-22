@@ -2,3 +2,14 @@
 # Desactiva el file watcher basado en inotify para evitar el error
 # "inotify instance limit reached" en Streamlit Community Cloud.
 fileWatcherType = "none"
+folderWatchBlacklist = [
+	".git",
+	".venv",
+	"__pycache__",
+	"dpd-db",
+	"audio",
+	"go_modules",
+	"resources",
+	"shared_data",
+	"tests",
+]
