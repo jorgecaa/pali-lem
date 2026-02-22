@@ -14,6 +14,10 @@ import urllib.request
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from streamlit.logger import get_logger as _get_st_logger
+
+logger = _get_st_logger("pali_lem")
+
 PUNCTUATION_LABELS = {
     ".": "<PUNTO>",
     ",": "<COMA>",
@@ -43,7 +47,14 @@ WORD_RE = re.compile(r"[^\W\d_]+", flags=re.UNICODE)
 TOKEN_RE = re.compile(r"[^\W\d_]+|\.\.\.|[.,;:!?…—–\-()«»\"'“”‘’¶]", flags=re.UNICODE)
 
 IS_CONSOLE_MODE = os.environ.get("PALI_LEM_NO_UI") == "1"
+# Activa trazas completas en la consola del servidor: PALI_LEM_DEBUG=1 streamlit run ...
+IS_DEBUG = os.environ.get("PALI_LEM_DEBUG") == "1"
 SAVED_SESSIONS_PATH = Path(__file__).parent / "saved_sessions.json"
+CACHE_TTL_ONE_MONTH_SECONDS = 30 * 24 * 60 * 60
+
+if IS_DEBUG:
+    logger.setLevel("DEBUG")
+    logger.debug("[pali-lem] Modo DEBUG activo")
 
 # Configurar página
 if not IS_CONSOLE_MODE:
@@ -54,7 +65,7 @@ if not IS_CONSOLE_MODE:
     )
 
 # Cargar diccionario DPD
-@st.cache_data(ttl=3600, max_entries=1, show_spinner="Cargando diccionario DPD...")
+@st.cache_data(ttl=CACHE_TTL_ONE_MONTH_SECONDS, max_entries=1, show_spinner="Cargando diccionario DPD...")
 def load_dictionary():
     """Carga únicamente `dpd_dictionary.json`."""
     ensure_dpd_json_available()
@@ -69,7 +80,7 @@ def load_dictionary():
         return json.load(f)
 
 
-@st.cache_data(ttl=3600, show_spinner="Preparando diccionario por primera vez...")
+@st.cache_data(ttl=CACHE_TTL_ONE_MONTH_SECONDS, show_spinner="Preparando diccionario por primera vez...")
 def ensure_dpd_json_available():
     """Asegura `dpd_dictionary.json` desde archivo local comprimido o URL remota."""
     dict_path = Path(__file__).parent / "dpd_dictionary.json"
@@ -89,6 +100,7 @@ def ensure_dpd_json_available():
             temp_path.replace(dict_path)
             return str(dict_path)
         except Exception:
+            logger.exception("Error descomprimiendo dpd_dictionary.json.gz desde %s", gz_path)
             if temp_path.exists():
                 temp_path.unlink()
             return ""
@@ -110,6 +122,7 @@ def ensure_dpd_json_available():
         temp_path.replace(dict_path)
         return str(dict_path)
     except Exception:
+        logger.exception("Error descargando dpd_dictionary.json desde %s", dpd_json_url)
         if temp_path.exists():
             temp_path.unlink()
         return ""
@@ -128,6 +141,7 @@ def _is_valid_dpd_db(path):
         conn.close()
         return result is not None
     except sqlite3.Error:
+        logger.debug("_is_valid_dpd_db: error SQLite en %s", path, exc_info=True)
         return False
 
 
@@ -177,6 +191,7 @@ def _load_json_file(path, default):
         with open(path, "r", encoding="utf-8") as file_handle:
             return json.load(file_handle)
     except Exception:
+        logger.exception("Error leyendo JSON desde %s", path)
         return default
 
 
@@ -187,6 +202,7 @@ def _save_json_file(path, payload):
             json.dump(payload, file_handle, ensure_ascii=False, indent=2)
         temp_path.replace(path)
     except Exception:
+        logger.exception("Error guardando JSON en %s", path)
         if temp_path.exists():
             temp_path.unlink()
 
@@ -203,6 +219,7 @@ def _should_check_update(last_checked_at, interval_hours):
     try:
         parsed = datetime.fromisoformat(last_checked_at)
     except ValueError:
+        logger.debug("_should_check_update: valor de fecha inválido: %r", last_checked_at)
         return True
     return _utcnow() - parsed >= timedelta(hours=interval_hours)
 
@@ -221,6 +238,7 @@ def _fetch_remote_signature(download_url, timeout):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return build_signature(response)
     except Exception:
+        logger.exception("Error obteniendo firma remota (HEAD) de %s", download_url)
         return {}
 
 
@@ -239,6 +257,7 @@ def _download_dpd_db(download_url, target_dir, target_db, timeout):
             temp_path.replace(target_db)
             return True
         except Exception:
+            logger.exception("Error descargando dpd.db directamente desde %s", download_url)
             if temp_path.exists():
                 temp_path.unlink()
             return False
@@ -276,6 +295,7 @@ def _download_dpd_db(download_url, target_dir, target_db, timeout):
         temp_db_path.replace(target_db)
         return True
     except Exception:
+        logger.exception("Error descargando/extrayendo dpd.db.tar.bz2 desde %s", download_url)
         if temp_db_path.exists():
             temp_db_path.unlink()
         return False
@@ -375,7 +395,7 @@ def ensure_dpd_db_available():
     return str(selected_db) if selected_db else ""
 
 
-@st.cache_data(ttl=604800, max_entries=1, show_spinner=False)
+@st.cache_data(ttl=CACHE_TTL_ONE_MONTH_SECONDS, max_entries=1, show_spinner=False)
 def get_dpd_db_path():
     """Encuentra una base `dpd.db` válida usando referencias relativas al proyecto.
 
@@ -391,14 +411,20 @@ def _load_json_field(value, default):
     try:
         return json.loads(value)
     except json.JSONDecodeError:
+        logger.debug("_load_json_field: JSON inválido en campo: %r", value)
         return default
 
 
 def _dedupe(values):
+    """Deduplica preservando orden. Descarta None y cadenas vacías, pero conserva 0 y otros falsos numéricos."""
     seen = set()
     result = []
     for value in values:
-        if value and value not in seen:
+        if value is None:
+            continue
+        if isinstance(value, str) and not value:
+            continue
+        if value not in seen:
             seen.add(value)
             result.append(value)
     return result
@@ -588,17 +614,33 @@ def tokenize_pali_text(text):
     return [token["norm"] for token in token_stream if token["kind"] == "word"]
 
 
-@st.cache_data(ttl=1800, max_entries=2)
+@st.cache_data(ttl=CACHE_TTL_ONE_MONTH_SECONDS, max_entries=2)
 def get_dpd_lookup_count(dpd_db_path):
     conn = sqlite3.connect(dpd_db_path)
     try:
         row = conn.execute("SELECT COUNT(*) FROM lookup").fetchone()
         return int(row[0]) if row else 0
+    except sqlite3.OperationalError:
+        logger.debug("get_dpd_lookup_count: tabla lookup no encontrada en %s", dpd_db_path)
+        return 0
     finally:
         conn.close()
 
 
-@st.cache_data(show_spinner=False, ttl=900, max_entries=128)
+_SQLITE_MAX_VARS = 900  # SQLite limita a 999; usamos 900 para margen seguro
+
+
+def _sqlite_fetchall_chunked(conn, query_prefix, params, query_suffix=""):
+    """Ejecuta una query con IN(?) dividiendo params en chunks seguros para SQLite."""
+    rows = []
+    for i in range(0, len(params), _SQLITE_MAX_VARS):
+        chunk = params[i:i + _SQLITE_MAX_VARS]
+        placeholders = ",".join("?" for _ in chunk)
+        rows.extend(conn.execute(f"{query_prefix} ({placeholders}) {query_suffix}", chunk).fetchall())
+    return rows
+
+
+@st.cache_data(show_spinner=False, ttl=CACHE_TTL_ONE_MONTH_SECONDS, max_entries=128)
 def lookup_words_in_dpd(words, dpd_db_path):
     """Busca palabras en `lookup` y `dpd_headwords` usando dpd.db."""
     unique_words = [word for word in _dedupe(words) if word]
@@ -627,12 +669,11 @@ def lookup_words_in_dpd(words, dpd_db_path):
     try:
         conn.row_factory = sqlite3.Row
         root_group_cache = {}
-        placeholders = ",".join("?" for _ in query_words)
-
-        lookup_rows = conn.execute(
-            f"SELECT lookup_key, headwords, grammar FROM lookup WHERE lookup_key IN ({placeholders})",
+        lookup_rows = _sqlite_fetchall_chunked(
+            conn,
+            "SELECT lookup_key, headwords, grammar FROM lookup WHERE lookup_key IN",
             query_words,
-        ).fetchall()
+        )
         # Parsear headwords JSON una sola vez y almacenarlo junto a la fila
         lookup_map = {}
         headword_ids = []
@@ -642,20 +683,18 @@ def lookup_words_in_dpd(words, dpd_db_path):
                 parsed_ids = []
             lookup_map[row["lookup_key"]] = (row, parsed_ids)
             headword_ids.extend(parsed_ids)
+        # _dedupe ahora preserva 0 como entero válido; además filtramos solo ints
         unique_headword_ids = [item for item in _dedupe(headword_ids) if isinstance(item, int)]
 
         headwords_by_id = {}
         if unique_headword_ids:
-            hw_placeholders = ",".join("?" for _ in unique_headword_ids)
-            hw_rows = conn.execute(
-                f"""
-                SELECT id, lemma_1, pos, grammar, meaning_1, meaning_2, meaning_lit, sanskrit,
-                       root_key, root_sign, derived_from, construction, stem, pattern
-                FROM dpd_headwords
-                WHERE id IN ({hw_placeholders})
-                """,
+            hw_rows = _sqlite_fetchall_chunked(
+                conn,
+                "SELECT id, lemma_1, pos, grammar, meaning_1, meaning_2, meaning_lit, sanskrit,"
+                " root_key, root_sign, derived_from, construction, stem, pattern"
+                " FROM dpd_headwords WHERE id IN",
                 unique_headword_ids,
-            ).fetchall()
+            )
             headwords_by_id = {row["id"]: row for row in hw_rows}
 
         # Bulk-load root_group para todas las raíces únicas encontradas en headwords
@@ -665,11 +704,11 @@ def lookup_words_in_dpd(words, dpd_db_path):
             if hw["root_key"]:
                 all_root_keys.add(str(hw["root_key"]))
         if all_root_keys:
-            rk_placeholders = ",".join("?" for _ in all_root_keys)
-            root_rows = conn.execute(
-                f"SELECT root, root_sign, root_group FROM dpd_roots WHERE root IN ({rk_placeholders})",
+            root_rows = _sqlite_fetchall_chunked(
+                conn,
+                "SELECT root, root_sign, root_group FROM dpd_roots WHERE root IN",
                 list(all_root_keys),
-            ).fetchall()
+            )
             for rr in root_rows:
                 cache_key = (str(rr["root_sign"] or ""), str(rr["root"] or ""))
                 if cache_key not in root_group_cache:
@@ -788,16 +827,13 @@ def lookup_words_in_dpd(words, dpd_db_path):
             if not lemma_candidates:
                 return result
 
-            missing_placeholders = ",".join("?" for _ in lemma_candidates)
-            lemma_rows = conn.execute(
-                f"""
-                SELECT lemma_1, pos, grammar, meaning_1, meaning_2, meaning_lit, sanskrit, root_key, root_sign
-                     , derived_from, construction, stem, pattern
-                FROM dpd_headwords
-                WHERE lower(lemma_1) IN ({missing_placeholders})
-                """,
+            lemma_rows = _sqlite_fetchall_chunked(
+                conn,
+                "SELECT lemma_1, pos, grammar, meaning_1, meaning_2, meaning_lit, sanskrit, root_key, root_sign"
+                ", derived_from, construction, stem, pattern"
+                " FROM dpd_headwords WHERE lower(lemma_1) IN",
                 lemma_candidates,
-            ).fetchall()
+            )
 
             lemma_map = {}
             for row in lemma_rows:
@@ -855,6 +891,9 @@ def lookup_words_in_dpd(words, dpd_db_path):
 
 # Procesar texto Pali
 def process_pali_text(text, dictionary):
+    if not isinstance(dictionary, dict):
+        logger.debug("process_pali_text: dictionary inválido (%s), usando diccionario vacío", type(dictionary).__name__)
+        dictionary = {}
     token_stream = tokenize_pali_with_separators(text)
     gloss_entries = []
 
@@ -902,6 +941,11 @@ def process_pali_text(text, dictionary):
 
 
 def process_pali_with_lookup_map(text, lookup_map, fallback_dictionary=None):
+    if not isinstance(lookup_map, dict):
+        logger.debug("process_pali_with_lookup_map: lookup_map inválido (%s), usando mapa vacío", type(lookup_map).__name__)
+        lookup_map = {}
+    if fallback_dictionary is None or not isinstance(fallback_dictionary, dict):
+        fallback_dictionary = {}
     token_stream = tokenize_pali_with_separators(text)
     gloss_entries = []
     fallback_dictionary = fallback_dictionary or {}
@@ -1077,14 +1121,14 @@ def render_philological_gloss(gloss_entries):
             f'</div>'
         )
 
+    # Acumular todo el HTML en una sola cadena y emitirlo con un único st.markdown()
+    # evita la penalización de N llamadas individuales a Streamlit (crítico con 1000+ tarjetas).
+    parts = []
     entry_number = 0
     for entry in gloss_entries:
         if entry.get("part_of_speech") == "SEP":
             symbol = _display_value(entry.get("separator_symbol"), "")
-            st.markdown(
-                f'<span class="sep-chip">{html.escape(symbol)}</span>',
-                unsafe_allow_html=True,
-            )
+            parts.append(f'<span class="sep-chip">{html.escape(symbol)}</span>')
             continue
 
         entry_number += 1
@@ -1119,17 +1163,19 @@ def render_philological_gloss(gloss_entries):
             _row("Etimología", etymology, "gloss-etym"),
         ])
 
-        st.markdown(
-            f"""<div class="{card_class}">
-  <div class="gloss-card-header">
-    <span class="gloss-num">{entry_number}.</span>
-    <span class="gloss-word">{html.escape(word)}</span>{fallback_html}{not_found_html}
-    {pos_badge}
-  </div>
-  <div class="gloss-fields">{rows_html}</div>
-</div>""",
-            unsafe_allow_html=True,
+        parts.append(
+            f'<div class="{card_class}">'
+            f'<div class="gloss-card-header">'
+            f'<span class="gloss-num">{entry_number}.</span>'
+            f'<span class="gloss-word">{html.escape(word)}</span>{fallback_html}{not_found_html}'
+            f' {pos_badge}'
+            f'</div>'
+            f'<div class="gloss-fields">{rows_html}</div>'
+            f'</div>'
         )
+
+    if parts:
+        st.markdown("\n".join(parts), unsafe_allow_html=True)
 
 
 def generate_rich_gloss_text(gloss_entries):
@@ -1260,6 +1306,7 @@ def _format_saved_at_santiago(saved_at):
         dt_santiago = dt_utc.astimezone(ZoneInfo("America/Santiago"))
         return dt_santiago.strftime("%Y-%m-%d %H:%M %Z")
     except Exception:
+        logger.debug("_format_saved_at_santiago: no se pudo parsear '%s'", saved_at, exc_info=True)
         return saved_at
 
 
@@ -1313,7 +1360,25 @@ def build_session_payload(dict_name, pali_text):
     }
 
 
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def apply_loaded_session(session_data):
+    if not isinstance(session_data, dict):
+        logger.debug("apply_loaded_session: payload inválido (%s), usando {}", type(session_data).__name__)
+        session_data = {}
+
     dict_name = str(session_data.get("dict_name", "dpd"))
 
     st.session_state["dict_option"] = _dict_name_to_option(dict_name)
@@ -1321,14 +1386,19 @@ def apply_loaded_session(session_data):
 
     generated_gloss = bool(session_data.get("generated_gloss", False))
     st.session_state["generated_gloss"] = generated_gloss
-    st.session_state["gloss_entries"] = session_data.get("gloss_entries", []) if generated_gloss else []
+    gloss_entries = session_data.get("gloss_entries", [])
+    st.session_state["gloss_entries"] = gloss_entries if generated_gloss and isinstance(gloss_entries, list) else []
     st.session_state["gloss_compact_text"] = str(session_data.get("gloss_compact_text", ""))
     st.session_state["gloss_rich_text"] = str(session_data.get("gloss_rich_text", ""))
-    st.session_state["gloss_word_total"] = int(session_data.get("gloss_word_total", 0))
-    st.session_state["gloss_found_words"] = int(session_data.get("gloss_found_words", 0))
-    st.session_state["gloss_coverage"] = float(session_data.get("gloss_coverage", 0.0))
+    gloss_word_total = max(0, _safe_int(session_data.get("gloss_word_total", 0), default=0))
+    gloss_found_words = max(0, _safe_int(session_data.get("gloss_found_words", 0), default=0))
+    gloss_coverage = _safe_float(session_data.get("gloss_coverage", 0.0), default=0.0)
+    st.session_state["gloss_word_total"] = gloss_word_total
+    st.session_state["gloss_found_words"] = min(gloss_found_words, gloss_word_total) if gloss_word_total > 0 else 0
+    st.session_state["gloss_coverage"] = max(0.0, min(100.0, gloss_coverage))
 
 if not IS_CONSOLE_MODE:
+  try:
     if "dict_option" not in st.session_state:
         st.session_state["dict_option"] = "Digital Pali Dictionary"
     if "pali_text_input" not in st.session_state:
@@ -1511,20 +1581,24 @@ if not IS_CONSOLE_MODE:
     # ── Carga de recursos ──────────────────────────────────────────────────
     dict_name = "dpd"
     with st.status("Cargando recursos DPD…", expanded=False) as status:
+        def _safe_status_update(**kwargs):
+            if status is not None:
+                status.update(**kwargs)
+
         dpd_db_path = get_dpd_db_path()
         try:
             dictionary = load_dictionary()
         except Exception as exc:
-            status.update(label="Error cargando Digital Pali Dictionary", state="error")
+            _safe_status_update(label="Error cargando Digital Pali Dictionary", state="error")
             st.error(f"No se pudo cargar el diccionario DPD: {exc}")
             st.stop()
 
         if not isinstance(dictionary, dict) or not dictionary:
-            status.update(label="Error cargando Digital Pali Dictionary", state="error")
+            _safe_status_update(label="Error cargando Digital Pali Dictionary", state="error")
             st.error("El diccionario DPD está vacío o inválido. Revisa `dpd_dictionary.json`.")
             st.stop()
 
-        status.update(label="Digital Pali Dictionary listo", state="complete")
+        _safe_status_update(label="Digital Pali Dictionary listo", state="complete")
 
     if dpd_db_path:
         total_words = get_dpd_lookup_count(dpd_db_path)
@@ -1664,7 +1738,11 @@ if not IS_CONSOLE_MODE:
         else:
             st.session_state.generated_gloss = False
             st.session_state.gloss_entries = []
+            st.session_state.gloss_compact_text = ""
             st.session_state.gloss_rich_text = ""
+            st.session_state.gloss_word_total = 0
+            st.session_state.gloss_found_words = 0
+            st.session_state.gloss_coverage = 0.0
             st.info("Ingresa texto en Pali para generar la glosa.")
 
     if st.session_state.generated_gloss:
@@ -1751,4 +1829,10 @@ if not IS_CONSOLE_MODE:
                     st.rerun()
     elif not pali_text.strip():
         st.info("✍️ Ingresa texto en Pali para comenzar.")
+  except Exception as _top_exc:
+      logger.exception("Excepción no capturada en el bloque principal de la UI")
+      if IS_DEBUG:
+          st.exception(_top_exc)
+      else:
+          st.error(f"Error inesperado: {_top_exc}\n\nActiva PALI_LEM_DEBUG=1 para ver el traceback completo en la consola del servidor.")
 
