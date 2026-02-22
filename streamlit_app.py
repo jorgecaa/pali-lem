@@ -1227,13 +1227,19 @@ def generate_rich_gloss_text(gloss_entries):
 
 
 def render_copy_button(text_to_copy, button_label, key_suffix):
-    encoded_text = json.dumps(text_to_copy)
+    # NOTA: NO incrustar el texto como literal JSON en el JS — para sesiones grandes
+    # (>100 KB) eso colapsa el iframe de components.html. En su lugar lo metemos en
+    # un <textarea> oculto y lo leemos desde el DOM.
     safe_suffix = re.sub(r"[^a-zA-Z0-9_-]", "", str(key_suffix)) or "copy"
     status_id = f"copy-status-{safe_suffix}"
+    textarea_id = f"copy-src-{safe_suffix}"
     function_name = f"copyGlossText_{safe_suffix}"
+    # Escapar el texto para incluirlo como contenido de un textarea HTML
+    escaped_text = text_to_copy.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     components.html(
         f"""
 <div>
+    <textarea id="{textarea_id}" style="display:none" readonly>{escaped_text}</textarea>
     <button
         style="
             width: 100%;
@@ -1257,7 +1263,7 @@ def render_copy_button(text_to_copy, button_label, key_suffix):
 </div>
 <script>
 function {function_name}() {{
-    const text = {encoded_text};
+    const text = document.getElementById('{textarea_id}').value;
     const status = document.getElementById('{status_id}');
     navigator.clipboard.writeText(text)
         .then(() => {{ status.textContent = '\u2713 Copiado'; setTimeout(()=>status.textContent='',2000); }})
