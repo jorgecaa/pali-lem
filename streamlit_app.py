@@ -51,6 +51,8 @@ IS_CONSOLE_MODE = os.environ.get("PALI_LEM_NO_UI") == "1"
 IS_DEBUG = os.environ.get("PALI_LEM_DEBUG") == "1"
 SAVED_SESSIONS_PATH = Path(__file__).parent / "saved_sessions.json"
 CACHE_TTL_ONE_MONTH_SECONDS = 30 * 24 * 60 * 60
+MAX_LOADED_SESSION_BYTES = int(os.environ.get("PALI_LEM_MAX_SESSION_BYTES", "1500000"))
+MAX_LOADED_GLOSS_ENTRIES = int(os.environ.get("PALI_LEM_MAX_GLOSS_ENTRIES", "3000"))
 
 if IS_DEBUG:
     logger.setLevel("DEBUG")
@@ -1350,6 +1352,13 @@ def persist_saved_sessions(sessions):
     _save_json_file(SAVED_SESSIONS_PATH, sessions)
 
 
+def _estimate_json_size(payload):
+    try:
+        return len(json.dumps(payload, ensure_ascii=False))
+    except Exception:
+        return -1
+
+
 def build_session_payload(dict_name, pali_text):
     return {
         "saved_at": _utcnow().isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -1586,25 +1595,27 @@ if not IS_CONSOLE_MODE:
 
     # ── Carga de recursos ──────────────────────────────────────────────────
     dict_name = "dpd"
+    dictionary = None
     with st.status("Cargando recursos DPD…", expanded=False) as status:
         def _safe_status_update(**kwargs):
             if status is not None:
                 status.update(**kwargs)
 
         dpd_db_path = get_dpd_db_path()
-        try:
-            dictionary = load_dictionary()
-        except Exception as exc:
-            _safe_status_update(label="Error cargando Digital Pali Dictionary", state="error")
-            st.error(f"No se pudo cargar el diccionario DPD: {exc}")
-            st.stop()
+        if not dpd_db_path:
+            try:
+                dictionary = load_dictionary()
+            except Exception as exc:
+                _safe_status_update(label="Error cargando Digital Pali Dictionary", state="error")
+                st.error(f"No se pudo cargar el diccionario DPD: {exc}")
+                st.stop()
 
-        if not isinstance(dictionary, dict) or not dictionary:
-            _safe_status_update(label="Error cargando Digital Pali Dictionary", state="error")
-            st.error("El diccionario DPD está vacío o inválido. Revisa `dpd_dictionary.json`.")
-            st.stop()
+            if not isinstance(dictionary, dict) or not dictionary:
+                _safe_status_update(label="Error cargando Digital Pali Dictionary", state="error")
+                st.error("El diccionario DPD está vacío o inválido. Revisa `dpd_dictionary.json`.")
+                st.stop()
 
-        _safe_status_update(label="Digital Pali Dictionary listo", state="complete")
+        _safe_status_update(label="Recursos DPD listos", state="complete")
 
     if dpd_db_path:
         total_words = get_dpd_lookup_count(dpd_db_path)
@@ -1656,9 +1667,22 @@ if not IS_CONSOLE_MODE:
             selected_name = st.session_state.get("session_picker_name")
             selected_session = saved_sessions.get(selected_name)
             if selected_session:
-                apply_loaded_session(selected_session)
-                st.toast(f"Sesión cargada: {selected_name}", icon="✅")
-                st.rerun()
+                session_size = _estimate_json_size(selected_session)
+                gloss_entries = selected_session.get("gloss_entries", []) if isinstance(selected_session, dict) else []
+                if session_size > MAX_LOADED_SESSION_BYTES:
+                    st.toast(
+                        f"Sesión demasiado grande para cargar en este entorno ({session_size:,} bytes).",
+                        icon="⚠️",
+                    )
+                elif isinstance(gloss_entries, list) and len(gloss_entries) > MAX_LOADED_GLOSS_ENTRIES:
+                    st.toast(
+                        f"Sesión con demasiadas entradas ({len(gloss_entries):,}). Máximo: {MAX_LOADED_GLOSS_ENTRIES:,}.",
+                        icon="⚠️",
+                    )
+                else:
+                    apply_loaded_session(selected_session)
+                    st.toast(f"Sesión cargada: {selected_name}", icon="✅")
+                    st.rerun()
             else:
                 st.toast("No se pudo cargar la sesión seleccionada.", icon="⚠️")
 
@@ -1713,6 +1737,11 @@ if not IS_CONSOLE_MODE:
         if pali_text.strip():
             with st.spinner("Analizando texto pali…"):
                 if dpd_db_path:
+                    if dictionary is None:
+                        try:
+                            dictionary = load_dictionary()
+                        except Exception:
+                            dictionary = {}
                     words = tuple(tokenize_pali_text(pali_text))
                     lookup_map = lookup_words_in_dpd(words, dpd_db_path)
                     gloss_entries = process_pali_with_lookup_map(
